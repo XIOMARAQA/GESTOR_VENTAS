@@ -1,0 +1,37 @@
+@import './base.css';
+
+/* Anula la plantilla por defecto de create-vue (max-width + grid en #app) para layout a pantalla completa */
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  width: 100%;
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  background: #050b14;
+  color: #0f172a;
+}
+
+#app {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  display: block;
+}
+
+a {
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  a:hover {
+    text-decoration: underline;
+  }
+}
