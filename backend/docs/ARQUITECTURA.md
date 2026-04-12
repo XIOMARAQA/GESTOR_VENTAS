@@ -17,7 +17,6 @@ Cada módulo es una `app` con modelos propios. Las dependencias cruzadas se limi
 - `ventas`: cotizaciones, documentos de venta, pedidos (POS / carga masiva vía `OrigenPedido`).
 - `compras`: órdenes, documentos de compra (físico/electrónico), gastos recurrentes.
 - `tesoreria`: bancos, cajas, cobranzas, pagos recibidos, cronograma, conciliaciones.
-- `restaurante`: comandas y líneas con estados para cocina.
 - `contabilidad`: plan de cuentas, asientos, comunicaciones de baja.
 - `administracion`: configuración clave/valor JSON, tareas de usuario.
 
@@ -77,7 +76,6 @@ El menú lateral del frontend se define en `frontend/src/navigation/modules.ts`:
 | Compras | `documento_compra`, `orden_compra`, `gasto_recurrente` | `…/compras/documentos/`, `ordenes/`, `gastos-recurrentes/` |
 | Tesorería | `cobranza`, `pago_recibido`, etc. | `…/tesoreria/cobranzas/`, `pagos-recibidos/`, … |
 | Inventario | `almacen`, `stock`, `movimiento_stock`, `lista_precio` | `…/inventario/almacenes/`, `stock/`, `movimientos/`, `listas-precio/` |
-| Restaurante | `comanda`, `comanda_linea` | `…/restaurante/comandas/`, `cocina/` |
 | Contabilidad | `plan_cuenta`, `asiento_contable`, `comunicacion_baja` | `…/contabilidad/plan-cuentas/`, `asientos/`, `comunicaciones-baja/` |
 | Admin | `empresa`, `sucursal`, `configuracion_sistema`, `tarea` | `…/core/empresas/`, `sucursales/`, `…/administracion/configuracion/`, `tareas/` |
 

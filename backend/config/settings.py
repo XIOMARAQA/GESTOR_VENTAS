@@ -37,7 +37,6 @@ INSTALLED_APPS = [
     "apps.ventas",
     "apps.compras",
     "apps.tesoreria",
-    "apps.restaurante",
     "apps.contabilidad",
     "apps.administracion",
 ]
@@ -178,5 +177,5 @@ SUNAT_RUC_TOKEN_IN_QUERY = _sunat_q in ("1", "true", "yes", "on")
 SPECTACULAR_SETTINGS = {
     "TITLE": "Gestor de Ventas API",
     "VERSION": "1.0.0",
-    "DESCRIPTION": "API modular: ventas, compras, tesorería, inventario, restaurante, contabilidad.",
+    "DESCRIPTION": "API modular: ventas, compras, tesorería, inventario, contabilidad.",
 }

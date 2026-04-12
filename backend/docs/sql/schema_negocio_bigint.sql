@@ -19,7 +19,6 @@ CREATE TYPE tipo_documento_compra AS ENUM (
 
 CREATE TYPE estado_documento AS ENUM ('BORRADOR', 'EMITIDO', 'ANULADO', 'PAGADO_PARCIAL', 'PAGADO');
 CREATE TYPE tipo_movimiento_stock AS ENUM ('INGRESO', 'SALIDA', 'AJUSTE', 'TRANSFERENCIA');
-CREATE TYPE estado_comanda AS ENUM ('PENDIENTE', 'EN_PREPARACION', 'LISTO', 'ENTREGADO', 'CANCELADO');
 
 -- ========== Administración / seguridad ==========
 CREATE TABLE empresa (
