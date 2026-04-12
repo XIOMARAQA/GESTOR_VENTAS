@@ -80,7 +80,10 @@ class StockService:
         referencia_id,
         usuario=None,
         glosa: str = "",
-    ) -> MovimientoStock:
+    ) -> MovimientoStock | None:
+        to_process = [(item, cantidad) for item, cantidad in lineas if not item.es_servicio]
+        if not to_process:
+            return None
         mov = MovimientoStock.objects.create(
             empresa_id=empresa_id,
             almacen=almacen,
@@ -90,7 +93,7 @@ class StockService:
             glosa=glosa,
             usuario=usuario,
         )
-        for item, cantidad in lineas:
+        for item, cantidad in to_process:
             if cantidad <= 0:
                 raise ValueError("La cantidad debe ser mayor que cero.")
             stock = cls._get_or_create_stock(item, almacen)

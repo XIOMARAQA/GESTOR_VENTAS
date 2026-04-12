@@ -28,14 +28,22 @@ function idsFromDocumentosQuery(): number[] {
 }
 
 const TIPO_CORTO: Record<string, string> = {
-  FACTURA_COMPRA: 'FC',
+  FACTURA_COMPRA: 'F',
+  BOLETA_COMPRA: 'B',
+  NOTA_COMPRA: 'NV',
+  RESUMEN_COMPRAS: 'RB',
+  GUIA_REMISION_COMPRA: 'GR',
   NOTA_CREDITO_PROVEEDOR: 'NC',
 }
 
 const tipoOptions = [
   { value: '', label: 'Todos' },
-  { value: 'FACTURA_COMPRA', label: 'Factura de compra' },
-  { value: 'NOTA_CREDITO_PROVEEDOR', label: 'N. crédito proveedor' },
+  { value: 'FACTURA_COMPRA', label: 'Factura' },
+  { value: 'BOLETA_COMPRA', label: 'Boleta' },
+  { value: 'NOTA_COMPRA', label: 'Nota de venta' },
+  { value: 'RESUMEN_COMPRAS', label: 'Resumen de boletas' },
+  { value: 'GUIA_REMISION_COMPRA', label: 'Guía de remisión' },
+  { value: 'NOTA_CREDITO_PROVEEDOR', label: 'N. crédito (proveedor)' },
 ]
 
 type PagoRow = {

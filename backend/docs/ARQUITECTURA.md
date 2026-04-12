@@ -26,14 +26,14 @@ Cada módulo es una `app` con modelos propios. Las dependencias cruzadas se limi
 
 1. `DocumentoVenta` en `BORRADOR` con líneas (`DocumentoVentaLinea`).
 2. **Emitir** (`DocumentoVentaService.emitir`): valida líneas y empresa del ítem.
-3. `StockService.aplicar_salida`: descuenta por almacén (omite `Item.es_servicio`).
+3. Stock: factura, boleta y nota de venta → `StockService.aplicar_salida` (omite `Item.es_servicio`); nota de crédito cliente → `aplicar_ingreso` (devolución). Resumen de boletas y guía de remisión no mueven kardex en este flujo.
 4. Estado pasa a `EMITIDO`.
 5. `CobranzaService.crear_desde_documento`: crea registro de cobranza por el total.
 
 ### Compra → inventario
 
 1. `DocumentoCompra` en borrador con líneas.
-2. **Emitir** (`DocumentoCompraService.emitir`): `StockService.aplicar_ingreso` en el almacén indicado.
+2. **Emitir** (`DocumentoCompraService.emitir`): factura de compra → `StockService.aplicar_ingreso`; nota de crédito proveedor → `aplicar_salida` (devolución al proveedor).
 
 ### Cobranza → pago
 

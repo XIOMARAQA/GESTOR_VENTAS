@@ -7,9 +7,17 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.inventario.models import Almacen
+from apps.inventario.services.stock_service import StockInsuficienteError
 from apps.tesoreria.services.cobranza_service import CobranzaService
-from apps.ventas.models import CondicionPagoDocumento, DocumentoVenta, EstadoDocumento
+from apps.ventas.models import (
+    CondicionPagoDocumento,
+    DocumentoVenta,
+    EstadoDocumento,
+    TipoDocumentoVenta,
+)
 from apps.ventas.serializers import DocumentoVentaSerializer, EmitirNubefactSerializer
+from apps.ventas.services.documento_venta_service import DocumentoVentaService
 from apps.ventas.services.nubefact_service import (
     construir_payload,
     enviar_a_nubefact,
@@ -84,6 +92,7 @@ class EmitirNubefactView(APIView):
         api_url = ser.validated_data["api_url"]
         token = ser.validated_data["token"]
         doc_id = ser.validated_data["documento_id"]
+        almacen_id = ser.validated_data.get("almacen_id")
 
         empresa_id = _empresa_usuario(request)
         qs = DocumentoVenta.objects.select_related("cliente", "empresa").prefetch_related(
@@ -118,6 +127,28 @@ class EmitirNubefactView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
+        almacen = None
+        if DocumentoVentaService.tipo_requiere_almacen_inventario(doc.tipo):
+            if not almacen_id:
+                return Response(
+                    {
+                        "detail": "Indique almacen_id para vincular la salida o ingreso de inventario al emitir este comprobante.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            almacen = get_object_or_404(
+                Almacen.objects.select_related("sucursal"), pk=almacen_id
+            )
+            if almacen.sucursal.empresa_id != doc.empresa_id:
+                return Response(
+                    {"detail": "El almacén no pertenece a la empresa del documento."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                DocumentoVentaService.verificar_suficiencia_stock(doc, almacen)
+            except StockInsuficienteError as e:
+                return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+
         try:
             payload = construir_payload(doc)
         except ValueError as e:
@@ -145,11 +176,28 @@ class EmitirNubefactView(APIView):
         doc.nubefact_sunat_codigo = sunat_cod
         doc.nubefact_sunat_descripcion = sunat_desc
         update_fields.extend(["nubefact_sunat_codigo", "nubefact_sunat_descripcion"])
-        with transaction.atomic():
-            doc.save(update_fields=update_fields)
-            CobranzaService.crear_desde_documento(
-                doc,
-                usuario=request.user if request.user.is_authenticated else None,
+        if almacen is not None:
+            doc.almacen = almacen
+            update_fields.append("almacen")
+
+        user = request.user if request.user.is_authenticated else None
+        try:
+            with transaction.atomic():
+                if almacen is not None:
+                    DocumentoVentaService.aplicar_movimiento_inventario(
+                        doc, almacen=almacen, usuario=user
+                    )
+                doc.save(update_fields=update_fields)
+                if doc.tipo != TipoDocumentoVenta.NOTA_CREDITO_CLIENTE:
+                    CobranzaService.crear_desde_documento(doc, usuario=user)
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except StockInsuficienteError as e:
+            return Response(
+                {
+                    "detail": f"{e} El comprobante ya fue aceptado en SUNAT; revise stock o contacte soporte.",
+                },
+                status=status.HTTP_409_CONFLICT,
             )
 
         return Response(

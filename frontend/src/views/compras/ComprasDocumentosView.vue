@@ -14,6 +14,21 @@ type AlmCat = { id: number; nombre?: string; sucursal?: number }
 
 type LineaForm = { item_id: number | ''; cantidad: string; precio_unit: string }
 
+/**
+ * Tipos de documento de compra: mismas etiquetas que en comprobantes de venta
+ * (`TipoDocumentoVenta`), con códigos internos propios de compras en backend.
+ */
+const tipoComprobanteCompraOptions = [
+  { value: 'FACTURA_COMPRA', label: 'Factura' },
+  { value: 'BOLETA_COMPRA', label: 'Boleta' },
+  { value: 'NOTA_COMPRA', label: 'Nota de venta' },
+  { value: 'RESUMEN_COMPRAS', label: 'Resumen de boletas' },
+  { value: 'GUIA_REMISION_COMPRA', label: 'Guía de remisión' },
+  { value: 'NOTA_CREDITO_PROVEEDOR', label: 'Nota de crédito (proveedor)' },
+] as const
+
+type TipoComprobanteCompraCab = (typeof tipoComprobanteCompraOptions)[number]['value']
+
 function isoDate(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -317,6 +332,9 @@ async function submitModalPagoCompras() {
 
 const ctx = useAppContextStore()
 
+/** Si no es null, el modal edita este borrador (PATCH actualizar-borrador). */
+const editingDocId = ref<number | null>(null)
+
 const showModal = ref(false)
 const catalogLoading = ref(false)
 const submitError = ref('')
@@ -327,6 +345,7 @@ const almacenesCatalog = ref<AlmCat[]>([])
 
 const formCab = reactive({
   proveedor_id: '' as number | '',
+  tipo: 'FACTURA_COMPRA' as TipoComprobanteCompraCab,
   serie: '',
   numero: '',
   fecha: isoDate(new Date()),
@@ -578,9 +597,11 @@ async function crearProveedorDesdeForm() {
 }
 
 async function openNuevaFactura() {
+  editingDocId.value = null
   submitError.value = ''
   showModal.value = true
   formCab.proveedor_id = ''
+  formCab.tipo = 'FACTURA_COMPRA'
   formCab.serie = ''
   formCab.numero = ''
   formCab.fecha = isoDate(new Date())
@@ -614,6 +635,7 @@ async function openNuevaFactura() {
 
 function cerrarModal() {
   showModal.value = false
+  editingDocId.value = null
 }
 
 function validateForm(): string | null {
@@ -636,11 +658,11 @@ function validateForm(): string | null {
   return null
 }
 
-async function postAltaBorrador(): Promise<number> {
+function buildAltaBorradorBody(): Record<string, unknown> {
   const raw = lineasForm.value.filter((l) => l.item_id !== '')
   const body: Record<string, unknown> = {
     proveedor_id: Number(formCab.proveedor_id),
-    tipo: 'FACTURA_COMPRA',
+    tipo: formCab.tipo,
     serie: formCab.serie.trim().slice(0, 10),
     numero: formCab.numero.trim().slice(0, 20),
     fecha: formCab.fecha,
@@ -656,11 +678,90 @@ async function postAltaBorrador(): Promise<number> {
   }
   const emp = ctx.empresaId
   if (emp) body.empresa_id = Number(emp)
+  return body
+}
 
+async function postAltaBorrador(): Promise<number> {
+  const body = buildAltaBorradorBody()
   const { data } = await api.post<{ id?: number }>('/compras/documentos/alta-borrador/', body)
   const id = data.id
   if (typeof id !== 'number') throw new Error('Respuesta sin id de documento.')
   return id
+}
+
+function precioUnitUiDesdeLineaApi(precioUnit: unknown, precioIncluyeIgv: boolean): string {
+  const n = typeof precioUnit === 'string' ? parseFloat(precioUnit) : Number(precioUnit)
+  if (!Number.isFinite(n) || n < 0) return ''
+  const shown = precioIncluyeIgv ? n * (1 + IGV_RATE) : n
+  const r = Math.round(shown * 10000) / 10000
+  return String(r)
+}
+
+async function openEditarBorrador(row: DocRow) {
+  const id = row.id
+  if (typeof id !== 'number' || rowEstado(row) !== 'BORRADOR') return
+  submitError.value = ''
+  editingDocId.value = id
+  showModal.value = true
+  catalogLoading.value = true
+  try {
+    const [docRes, provRes, itemsRes, almRes] = await Promise.all([
+      api.get<{
+        proveedor?: number
+        tipo?: string
+        serie?: string
+        numero?: string
+        fecha?: string
+        condicion_pago?: string
+        fecha_vencimiento?: string | null
+        precio_incluye_igv?: boolean
+        lineas?: { item?: number; cantidad?: string; precio_unit?: string }[]
+      }>(`/compras/documentos/${id}/`),
+      api.get<{ results?: ProvCat[] }>('/core/proveedores/?page_size=500&ordering=razon_social').catch(() => null),
+      api.get<{ results?: ItemCat[] }>('/inventario/items/?page_size=500').catch(() => null),
+      api.get<{ results?: AlmCat[] }>('/inventario/almacenes/?page_size=100&activo=1').catch(() => null),
+    ])
+    const d = docRes.data
+    proveedoresCatalog.value = provRes?.data?.results ?? []
+    itemCatalog.value = itemsRes?.data?.results ?? []
+    almacenesCatalog.value = almRes?.data?.results ?? []
+
+    const pid = d.proveedor
+    formCab.proveedor_id = typeof pid === 'number' ? pid : ''
+    formCab.tipo = (d.tipo as TipoComprobanteCompraCab) || 'FACTURA_COMPRA'
+    formCab.serie = typeof d.serie === 'string' ? d.serie : ''
+    formCab.numero = typeof d.numero === 'string' ? d.numero : ''
+    formCab.fecha = typeof d.fecha === 'string' ? d.fecha.slice(0, 10) : isoDate(new Date())
+    formCab.condicion_pago = d.condicion_pago === 'CREDITO' ? 'CREDITO' : 'CONTADO'
+    formCab.fecha_vencimiento =
+      typeof d.fecha_vencimiento === 'string' ? d.fecha_vencimiento.slice(0, 10) : ''
+    formCab.precio_incluye_igv = !!d.precio_incluye_igv
+
+    const prov = proveedoresCatalog.value.find((p) => p.id === pid)
+    if (prov) {
+      pickProveedorCatalogo(prov)
+    } else {
+      formProveedor.documento = ''
+      formProveedor.razon_social = ''
+    }
+
+    const incl = !!d.precio_incluye_igv
+    const lns = Array.isArray(d.lineas) ? d.lineas : []
+    lineasForm.value =
+      lns.length > 0
+        ? lns.map((ln) => ({
+            item_id: typeof ln.item === 'number' ? ln.item : '',
+            cantidad: ln.cantidad != null ? String(ln.cantidad) : '1',
+            precio_unit: precioUnitUiDesdeLineaApi(ln.precio_unit, incl),
+          }))
+        : [{ item_id: '', cantidad: '1', precio_unit: '' }]
+  } catch (e) {
+    submitError.value = detailFromAxios(e, 'No se pudo cargar el borrador.')
+    editingDocId.value = null
+    showModal.value = false
+  } finally {
+    catalogLoading.value = false
+  }
 }
 
 async function guardarBorrador() {
@@ -672,7 +773,13 @@ async function guardarBorrador() {
   submitting.value = true
   submitError.value = ''
   try {
-    await postAltaBorrador()
+    const eid = editingDocId.value
+    const body = buildAltaBorradorBody()
+    if (eid != null) {
+      await api.patch(`/compras/documentos/${eid}/actualizar-borrador/`, body)
+    } else {
+      await api.post('/compras/documentos/alta-borrador/', body)
+    }
     cerrarModal()
     await load()
   } catch (e) {
@@ -695,7 +802,14 @@ async function guardarEIngresarStock() {
   submitting.value = true
   submitError.value = ''
   try {
-    const docId = await postAltaBorrador()
+    const eid = editingDocId.value
+    let docId: number
+    if (eid != null) {
+      await api.patch(`/compras/documentos/${eid}/actualizar-borrador/`, buildAltaBorradorBody())
+      docId = eid
+    } else {
+      docId = await postAltaBorrador()
+    }
     await api.post(`/compras/documentos/${docId}/emitir/`, {
       almacen_id: Number(formAlmacenId.value),
     })
@@ -775,21 +889,37 @@ async function confirmarEmitir() {
 
 const actionBusyId = ref<number | null>(null)
 
-async function eliminarBorrador(row: DocRow) {
+async function anularDocumentoCompra(row: DocRow) {
   const id = row.id
-  if (typeof id !== 'number' || rowEstado(row) !== 'BORRADOR') return
-  if (!confirm('¿Eliminar este borrador de compra y sus líneas?')) return
+  if (typeof id !== 'number') return
+  const st = rowEstado(row)
+  if (st === 'BORRADOR') {
+    if (!confirm('¿Anular este borrador? Dejará de mostrarse en el listado.')) return
+  } else if (st === 'EMITIDO') {
+    if (
+      !confirm(
+        '¿Anular este documento registrado? Se revertirá el movimiento de inventario (si aplica) y solo es posible si no hay pagos en tesorería.',
+      )
+    )
+      return
+  } else {
+    return
+  }
   actionBusyId.value = id
   errorMsg.value = ''
   try {
-    await api.delete(`/compras/documentos/${id}/`)
+    await api.post(`/compras/documentos/${id}/anular/`, {})
     await load()
   } catch (e) {
-    errorMsg.value = detailFromAxios(e, 'No se pudo eliminar.')
+    errorMsg.value = detailFromAxios(e, 'No se pudo anular el documento.')
   } finally {
     actionBusyId.value = null
   }
 }
+
+const modalFacturaTitulo = computed(() =>
+  editingDocId.value != null ? 'Editar factura de proveedor (borrador)' : 'Nueva factura de proveedor',
+)
 </script>
 
 <template>
@@ -891,6 +1021,7 @@ async function eliminarBorrador(row: DocRow) {
                 <th>Venc.</th>
                 <th>Estado</th>
                 <th>Origen</th>
+                <th class="td-gestion">Gestión</th>
                 <th class="td-actions">Acciones</th>
               </tr>
             </thead>
@@ -924,6 +1055,51 @@ async function eliminarBorrador(row: DocRow) {
                   >
                 </td>
                 <td><span class="pill pill--muted">Interno</span></td>
+                <td class="td-gestion">
+                  <div class="cmp-gestion-icons" role="group" :aria-label="`Gestión documento ${numeroCompra(row)}`">
+                    <button
+                      v-if="rowEstado(row) === 'BORRADOR'"
+                      type="button"
+                      class="cmp-icon-btn cmp-icon-btn--edit"
+                      title="Editar borrador"
+                      :disabled="actionBusyId === row.id"
+                      @click="openEditarBorrador(row)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          stroke="currentColor"
+                          stroke-width="1.75"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      v-if="rowEstado(row) === 'BORRADOR' || rowEstado(row) === 'EMITIDO'"
+                      type="button"
+                      class="cmp-icon-btn cmp-icon-btn--del"
+                      title="Anular documento (lógico)"
+                      :disabled="actionBusyId === row.id"
+                      @click="anularDocumentoCompra(row)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          stroke="currentColor"
+                          stroke-width="1.75"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"
+                        />
+                      </svg>
+                    </button>
+                    <span
+                      v-if="rowEstado(row) !== 'BORRADOR' && rowEstado(row) !== 'EMITIDO'"
+                      class="muted-sm"
+                      >—</span
+                    >
+                  </div>
+                </td>
                 <td class="td-actions">
                   <template v-if="rowEstado(row) === 'BORRADOR'">
                     <button
@@ -933,14 +1109,6 @@ async function eliminarBorrador(row: DocRow) {
                       @click="abrirEmitir(row)"
                     >
                       Ingresar stock
-                    </button>
-                    <button
-                      type="button"
-                      class="btn-row btn-row--danger"
-                      :disabled="actionBusyId === row.id"
-                      @click="eliminarBorrador(row)"
-                    >
-                      Eliminar
                     </button>
                   </template>
                   <RouterLink
@@ -969,7 +1137,7 @@ async function eliminarBorrador(row: DocRow) {
     <Teleport to="body">
       <div v-if="showModal" class="modal-backdrop" @click.self="cerrarModal">
         <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="cmp-modal-title">
-          <h2 id="cmp-modal-title" class="modal-title">Nueva factura de proveedor</h2>
+          <h2 id="cmp-modal-title" class="modal-title">{{ modalFacturaTitulo }}</h2>
           <p class="modal-lead">
             Documento <strong>solo interno</strong> (no Nubefact ni SUNAT). Factura gravada con IGV 18%: indique si el
             precio unitario <strong>incluye IGV</strong> o no (igual que en ventas); el sistema calcula base, IGV y total.
@@ -1110,6 +1278,14 @@ async function eliminarBorrador(row: DocRow) {
                   {{ crearProvLoading ? '…' : 'Guardar proveedor y usar' }}
                 </button>
               </div>
+              <label class="fld">
+                <span>Tipo de comprobante</span>
+                <select v-model="formCab.tipo" class="inp">
+                  <option v-for="opt in tipoComprobanteCompraOptions" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                </select>
+              </label>
               <div class="grid-2">
                 <label class="fld">
                   <span>Serie (opc.)</span>
@@ -1729,6 +1905,59 @@ async function eliminarBorrador(row: DocRow) {
 .td-actions {
   white-space: normal;
   vertical-align: top;
+}
+
+.td-gestion {
+  vertical-align: middle;
+  width: 5.5rem;
+}
+
+.cmp-gestion-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.cmp-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.cmp-icon-btn svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.cmp-icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.cmp-icon-btn--edit {
+  color: #0e7490;
+  border-color: rgba(14, 116, 144, 0.35);
+}
+
+.cmp-icon-btn--edit:hover:not(:disabled) {
+  background: rgba(14, 116, 144, 0.08);
+}
+
+.cmp-icon-btn--del {
+  color: #b91c1c;
+  border-color: rgba(185, 28, 28, 0.35);
+}
+
+.cmp-icon-btn--del:hover:not(:disabled) {
+  background: rgba(185, 28, 28, 0.08);
 }
 
 .btn-row {

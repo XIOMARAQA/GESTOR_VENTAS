@@ -220,19 +220,22 @@ class ComprobanteAltaBorradorSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         cond = attrs.get("condicion_pago") or CondicionPagoDocumento.CONTADO
+        valid_mp = {c[0] for c in MedioPagoDocumento.choices}
         if cond == CondicionPagoDocumento.CREDITO:
             if not attrs.get("fecha_vencimiento"):
                 raise serializers.ValidationError(
                     {"fecha_vencimiento": "Indique la fecha de vencimiento en venta a crédito."}
                 )
-            attrs["medio_pago"] = ""
+            mp = (attrs.get("medio_pago") or "").strip()
+            if mp and mp not in valid_mp:
+                raise serializers.ValidationError({"medio_pago": "Medio de pago no válido."})
+            attrs["medio_pago"] = mp
         else:
             mp = (attrs.get("medio_pago") or "").strip()
             if not mp:
                 raise serializers.ValidationError(
                     {"medio_pago": "Seleccione el medio de pago (venta al contado)."}
                 )
-            valid_mp = {c[0] for c in MedioPagoDocumento.choices}
             if mp not in valid_mp:
                 raise serializers.ValidationError({"medio_pago": "Medio de pago no válido."})
             attrs["medio_pago"] = mp
@@ -271,19 +274,22 @@ class CotizacionAltaBorradorSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         cond = attrs.get("condicion_pago") or CondicionPagoDocumento.CONTADO
+        valid_mp = {c[0] for c in MedioPagoDocumento.choices}
         if cond == CondicionPagoDocumento.CREDITO:
             if not attrs.get("fecha_vencimiento"):
                 raise serializers.ValidationError(
                     {"fecha_vencimiento": "Indique la fecha de vencimiento en venta a crédito."}
                 )
-            attrs["medio_pago"] = ""
+            mp = (attrs.get("medio_pago") or "").strip()
+            if mp and mp not in valid_mp:
+                raise serializers.ValidationError({"medio_pago": "Medio de pago no válido."})
+            attrs["medio_pago"] = mp
         else:
             mp = (attrs.get("medio_pago") or "").strip()
             if not mp:
                 raise serializers.ValidationError(
                     {"medio_pago": "Seleccione el medio de pago (venta al contado)."}
                 )
-            valid_mp = {c[0] for c in MedioPagoDocumento.choices}
             if mp not in valid_mp:
                 raise serializers.ValidationError({"medio_pago": "Medio de pago no válido."})
             attrs["medio_pago"] = mp
@@ -317,6 +323,7 @@ class EmitirNubefactSerializer(serializers.Serializer):
     """
 
     documento_id = serializers.IntegerField(min_value=1)
+    almacen_id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
     api_url = serializers.URLField(
         required=False,
         allow_blank=True,

@@ -230,12 +230,18 @@ async function consultarRucPadron() {
       ok?: boolean
       nombre_padron?: string
       razon_social?: string
+      direccion?: string
       detail?: string
     }>('/core/consultar-ruc/', { params: { numero: n } })
     if (data.ok) {
       const pad = (data.nombre_padron || data.razon_social || '').trim()
-      if (pad) form.value.razon_social = pad
-      else formErr.value = 'SUNAT no devolvió nombre para este RUC.'
+      const dirSunat = typeof data.direccion === 'string' ? data.direccion.trim() : ''
+      if (pad) {
+        form.value.razon_social = pad
+        if (dirSunat) {
+          form.value.direccion = dirSunat.slice(0, 2000)
+        }
+      } else formErr.value = 'SUNAT no devolvió nombre para este RUC.'
     } else {
       formErr.value =
         typeof data.detail === 'string' && data.detail.trim()
@@ -455,6 +461,7 @@ onMounted(load)
             <tr>
               <th>Documento</th>
               <th>Razón social / nombre</th>
+              <th>Dirección</th>
               <th>Teléfono</th>
               <th>Correo</th>
               <th>Activo</th>
@@ -467,6 +474,12 @@ onMounted(load)
                 <code class="code">{{ r.documento?.trim() || '—' }}</code>
               </td>
               <td class="td-name">{{ r.razon_social?.trim() || '—' }}</td>
+              <td
+                class="td-dir"
+                :title="(r.direccion || '').trim() || undefined"
+              >
+                {{ r.direccion?.trim() || '—' }}
+              </td>
               <td>{{ r.telefono?.trim() || '—' }}</td>
               <td>{{ r.email?.trim() || '—' }}</td>
               <td>
@@ -866,6 +879,14 @@ onMounted(load)
 }
 .td-name {
   font-weight: 600;
+}
+.td-dir {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+  font-weight: 500;
 }
 .pill {
   font-size: 0.72rem;

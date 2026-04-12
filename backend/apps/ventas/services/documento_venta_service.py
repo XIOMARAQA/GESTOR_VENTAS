@@ -2,17 +2,105 @@ from decimal import Decimal
 
 from django.db import transaction
 
-from apps.inventario.models import Almacen
+from apps.inventario.models import Almacen, Stock
 from apps.inventario.services.stock_service import StockInsuficienteError, StockService
 from apps.tesoreria.services.cobranza_service import CobranzaService
-from apps.ventas.models import CondicionPagoDocumento, DocumentoVenta, EstadoDocumento
+from apps.ventas.models import (
+    CondicionPagoDocumento,
+    DocumentoVenta,
+    EstadoDocumento,
+    TipoDocumentoVenta,
+)
 
 
 class DocumentoVentaService:
     """
-    Flujo: validar líneas → EMITIDO → descuenta stock (no servicios) → crea cobranza.
-    Validaciones: al menos una línea, cantidades > 0, items de la misma empresa, almacén de la misma empresa/sucursal.
+    Flujo: validar líneas → EMITIDO → movimiento de stock según tipo → cobranza (si aplica).
+
+    Inventario al emitir:
+    - Restan stock: factura, boleta, nota de venta (ventas que despachan mercadería).
+    - Suman stock: nota de crédito cliente (devolución).
+    - Sin movimiento de stock: resumen de boletas, guía de remisión (no consolidan kardex aquí).
+
+    Validaciones: al menos una línea, cantidades > 0, ítems de la misma empresa, almacén de la misma empresa.
     """
+
+    _TIPOS_STOCK_SALIDA = frozenset(
+        {
+            TipoDocumentoVenta.FACTURA,
+            TipoDocumentoVenta.BOLETA,
+            TipoDocumentoVenta.NOTA_VENTA,
+        }
+    )
+
+    @classmethod
+    def tipo_requiere_almacen_inventario(cls, tipo: str) -> bool:
+        return tipo in cls._TIPOS_STOCK_SALIDA or tipo == TipoDocumentoVenta.NOTA_CREDITO_CLIENTE
+
+    @classmethod
+    def verificar_suficiencia_stock(cls, documento: DocumentoVenta, almacen: Almacen) -> None:
+        """Solo salidas con mercadería; evita llamar a SUNAT si no hay stock (sin bloqueo fuerte)."""
+        if documento.tipo not in cls._TIPOS_STOCK_SALIDA:
+            return
+        for ln in documento.lineas.select_related("item").all():
+            if ln.item.es_servicio:
+                continue
+            cant = Decimal(ln.cantidad)
+            row = Stock.objects.filter(item_id=ln.item_id, almacen_id=almacen.pk).first()
+            disp = Decimal(row.cantidad) if row else Decimal("0")
+            if disp < cant:
+                raise StockInsuficienteError(
+                    f"Stock insuficiente para {ln.item.nombre} en {almacen.nombre}."
+                )
+
+    @classmethod
+    def aplicar_movimiento_inventario(
+        cls,
+        documento: DocumentoVenta,
+        *,
+        almacen: Almacen,
+        usuario=None,
+    ) -> None:
+        """Salida (F/B/NV) o ingreso (NCC) según tipo; no modifica estado ni cobranza."""
+        if almacen.sucursal.empresa_id != documento.empresa_id:
+            raise ValueError("El almacén no pertenece a la empresa del documento.")
+        lineas = [
+            (ln.item, Decimal(ln.cantidad))
+            for ln in documento.lineas.select_related(
+                "item", "item__unidad_medida"
+            ).all()
+        ]
+        tipo = documento.tipo
+        if tipo == TipoDocumentoVenta.NOTA_CREDITO_CLIENTE:
+            StockService.aplicar_ingreso(
+                empresa_id=documento.empresa_id,
+                almacen=almacen,
+                lineas=lineas,
+                referencia_tipo="DOCUMENTO_VENTA",
+                referencia_id=documento.id,
+                usuario=usuario,
+                glosa="Ingreso por nota de crédito cliente (devolución)",
+            )
+        elif tipo in cls._TIPOS_STOCK_SALIDA:
+            try:
+                StockService.aplicar_salida(
+                    empresa_id=documento.empresa_id,
+                    almacen=almacen,
+                    lineas=lineas,
+                    referencia_tipo="DOCUMENTO_VENTA",
+                    referencia_id=documento.id,
+                    usuario=usuario,
+                    glosa=f"Salida por emisión {tipo}",
+                )
+            except StockInsuficienteError:
+                raise
+        elif tipo in (
+            TipoDocumentoVenta.RESUMEN_BOLETAS,
+            TipoDocumentoVenta.GUIA_REMISION,
+        ):
+            return
+        else:
+            raise ValueError(f"Tipo de venta no contemplado para inventario: {tipo}")
 
     @staticmethod
     def _validar_antes_emitir(documento: DocumentoVenta) -> None:
@@ -46,29 +134,14 @@ class DocumentoVentaService:
         usuario=None,
     ) -> DocumentoVenta:
         cls._validar_antes_emitir(documento)
-        if almacen.sucursal.empresa_id != documento.empresa_id:
-            raise ValueError("El almacén no pertenece a la empresa del documento.")
-        lineas = [
-            (ln.item, Decimal(ln.cantidad))
-            for ln in documento.lineas.select_related(
-                "item", "item__unidad_medida"
-            ).all()
-        ]
-        try:
-            StockService.aplicar_salida(
-                empresa_id=documento.empresa_id,
-                almacen=almacen,
-                lineas=lineas,
-                referencia_tipo="DOCUMENTO_VENTA",
-                referencia_id=documento.id,
-                usuario=usuario,
-                glosa=f"Emisión {documento.tipo}",
-            )
-        except StockInsuficienteError:
-            raise
+        cls.aplicar_movimiento_inventario(
+            documento, almacen=almacen, usuario=usuario
+        )
+        documento.almacen = almacen
         documento.estado = EstadoDocumento.EMITIDO
-        documento.save(update_fields=["estado", "actualizado_en"])
-        CobranzaService.crear_desde_documento(documento, usuario=usuario)
+        documento.save(update_fields=["almacen", "estado", "actualizado_en"])
+        if documento.tipo != TipoDocumentoVenta.NOTA_CREDITO_CLIENTE:
+            CobranzaService.crear_desde_documento(documento, usuario=usuario)
         return documento
 
     @staticmethod

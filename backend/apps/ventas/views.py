@@ -1,7 +1,8 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import status, viewsets
@@ -33,6 +34,7 @@ from apps.ventas.serializers import (
     PedidoLineaSerializer,
     PedidoSerializer,
 )
+from apps.ventas.comprobante_html import render_comprobante_venta_html
 from apps.ventas.services.cotizacion_service import (
     CotizacionService,
     cotizacion_bloqueada_por_comprobante_emitido,
@@ -143,7 +145,7 @@ class CotizacionViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             em = (data.get("cliente_email") or "").strip()
             if em:
                 cliente.email = em
-            cliente.direccion = (data.get("cliente_direccion") or "").strip() or cliente.direccion
+            cliente.direccion = (data.get("cliente_direccion") or "").strip()
             cliente.save(update_fields=["razon_social", "email", "direccion"])
 
         vendedor = None
@@ -275,7 +277,7 @@ class CotizacionViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             em = (data.get("cliente_email") or "").strip()
             if em:
                 cliente.email = em
-            cliente.direccion = (data.get("cliente_direccion") or "").strip() or cliente.direccion
+            cliente.direccion = (data.get("cliente_direccion") or "").strip()
             cliente.save(update_fields=["razon_social", "email", "direccion"])
 
         vendedor = None
@@ -422,7 +424,14 @@ class CotizacionViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
 class DocumentoVentaViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = DocumentoVenta.objects.select_related(
         "empresa", "sucursal", "cliente", "vendedor"
-    ).prefetch_related("lineas")
+    ).prefetch_related(
+        Prefetch(
+            "lineas",
+            queryset=DocumentoVentaLinea.objects.select_related(
+                "item", "item__unidad_medida"
+            ).order_by("id"),
+        )
+    )
     serializer_class = DocumentoVentaSerializer
     search_fields = ["serie", "numero"]
     ordering_fields = ["fecha_emision", "tipo", "total", "creado_en", "estado"]
@@ -524,7 +533,7 @@ class DocumentoVentaViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             em = (data.get("cliente_email") or "").strip()
             if em:
                 cliente.email = em
-            cliente.direccion = (data.get("cliente_direccion") or "").strip() or cliente.direccion
+            cliente.direccion = (data.get("cliente_direccion") or "").strip()
             cliente.save(update_fields=["razon_social", "email", "direccion"])
 
         vendedor = None
@@ -597,6 +606,12 @@ class DocumentoVentaViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             DocumentoVentaSerializer(doc).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @action(detail=True, methods=["get"], url_path="vista-comprobante")
+    def vista_comprobante(self, request, pk=None):
+        doc = self.get_object()
+        body = render_comprobante_venta_html(request, doc)
+        return HttpResponse(body, content_type="text/html; charset=utf-8")
 
     @action(detail=True, methods=["post"], url_path="emitir")
     def emitir(self, request, pk=None):

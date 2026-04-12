@@ -2,7 +2,7 @@ from django.core.validators import MinValueValidator
 from django.db import models
 
 from apps.core.models import Cliente, Empresa, Sucursal, TimeStampedModel, Vendedor
-from apps.inventario.models import Item
+from apps.inventario.models import Almacen, Item
 
 
 class TipoDocumentoVenta(models.TextChoices):
@@ -251,6 +251,14 @@ class DocumentoVenta(TimeStampedModel):
         null=True,
         blank=True,
         related_name="documentos_venta",
+    )
+    almacen = models.ForeignKey(
+        Almacen,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="documentos_venta",
+        help_text="Almacén del movimiento de inventario al emitir (salida en F/B/NV; ingreso en NCC).",
     )
     cotizacion_origen = models.OneToOneField(
         "Cotizacion",

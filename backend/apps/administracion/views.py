@@ -9,6 +9,15 @@ class ConfiguracionSistemaViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewS
     queryset = ConfiguracionSistema.objects.select_related("empresa")
     serializer_class = ConfiguracionSistemaSerializer
 
+    def perform_create(self, serializer):
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            raw = self.request.data.get("empresa")
+            if raw is not None and str(raw).strip() != "":
+                serializer.save(empresa_id=int(raw))
+                return
+        super().perform_create(serializer)
+
 
 class TareaViewSet(viewsets.ModelViewSet):
     queryset = Tarea.objects.select_related("usuario")

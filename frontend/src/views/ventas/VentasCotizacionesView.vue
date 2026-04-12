@@ -340,13 +340,21 @@ async function consultarPadronCliente() {
         ok?: boolean
         nombre_padron?: string
         razon_social?: string
+        direccion?: string
         detail?: string
       }>('/core/consultar-ruc/', { params: { numero: n } })
       if (data.ok) {
         const pad = (data.nombre_padron || data.razon_social || '').trim()
+        const dirSunat = typeof data.direccion === 'string' ? data.direccion.trim() : ''
         if (pad) {
           formCliente.razon_social = pad.slice(0, 255)
-          clienteConsultMsg.value = 'Razón social sugerida por SUNAT (revise antes de guardar).'
+          if (dirSunat) {
+            formCliente.direccion = dirSunat.slice(0, 2000)
+            clienteConsultMsg.value =
+              'Razón social y dirección sugeridas por SUNAT (revise antes de guardar).'
+          } else {
+            clienteConsultMsg.value = 'Razón social sugerida por SUNAT (revise antes de guardar).'
+          }
           clienteConsultIsError.value = false
         } else {
           clienteConsultMsg.value = 'SUNAT no devolvió nombre para este RUC.'
@@ -620,6 +628,13 @@ async function guardarCotizacionBorrador() {
 
 const actionBusyId = ref<number | null>(null)
 
+type AlmCat = { id: number; nombre: string }
+const showNubefactAlmacenModal = ref(false)
+const nubefactPendingCot = ref<CotRow | null>(null)
+const nubefactAlmacenId = ref<number | ''>('')
+const nubefactAlmacenes = ref<AlmCat[]>([])
+const nubefactAlmacenModalErr = ref('')
+
 async function emitirInterna(row: CotRow) {
   const id = row.id
   if (typeof id !== 'number') return
@@ -651,14 +666,53 @@ function nubefactEmitErrorMessage(e: unknown): string {
   return 'Error de conexión o desconocido.'
 }
 
-async function emitirNubefactDesdeCotizacion(row: CotRow) {
+async function abrirEmitirNubefactDesdeCotizacion(row: CotRow) {
   const cotId = row.id
   const docId = docConvertidoId(row)
   if (typeof cotId !== 'number' || typeof docId !== 'number') return
+  nubefactPendingCot.value = row
+  nubefactAlmacenId.value = ''
+  nubefactAlmacenModalErr.value = ''
+  showNubefactAlmacenModal.value = true
+  if (nubefactAlmacenes.value.length) return
+  const params = new URLSearchParams()
+  params.set('page_size', '500')
+  params.set('ordering', 'nombre')
+  params.set('activo', '1')
+  const emp = ctx.empresaId
+  if (emp) params.set('empresa', String(emp))
+  try {
+    const { data } = await api.get<{ results?: AlmCat[] }>(`/inventario/almacenes/?${params}`)
+    nubefactAlmacenes.value = Array.isArray(data) ? data : (data.results ?? [])
+  } catch {
+    nubefactAlmacenes.value = []
+  }
+}
+
+function cerrarNubefactAlmacenModal() {
+  showNubefactAlmacenModal.value = false
+  nubefactPendingCot.value = null
+  nubefactAlmacenModalErr.value = ''
+}
+
+async function confirmarEmitirNubefactDesdeCotizacion() {
+  const row = nubefactPendingCot.value
+  const cotId = row?.id
+  const docId = row ? docConvertidoId(row) : null
+  if (typeof cotId !== 'number' || typeof docId !== 'number') return
+  if (nubefactAlmacenId.value === '' || nubefactAlmacenId.value == null) {
+    nubefactAlmacenModalErr.value = 'Seleccione el almacén para la salida de inventario.'
+    return
+  }
   actionBusyId.value = cotId
   errorMsg.value = ''
+  nubefactAlmacenModalErr.value = ''
   try {
-    await api.post('/ventas/nubefact/emitir/', { documento_id: docId })
+    await api.post('/ventas/nubefact/emitir/', {
+      documento_id: docId,
+      almacen_id: Number(nubefactAlmacenId.value),
+    })
+    cerrarNubefactAlmacenModal()
     await load()
   } catch (e) {
     errorMsg.value = nubefactEmitErrorMessage(e)
@@ -909,7 +963,7 @@ const precioColumnLabel = computed(() =>
                       class="btn-sm btn-sm--nubefact"
                       :disabled="actionBusyId === row.id"
                       title="Envía el borrador vinculado a SUNAT (Nubefact): correlativo, estado y PDF"
-                      @click="emitirNubefactDesdeCotizacion(row)"
+                      @click="abrirEmitirNubefactDesdeCotizacion(row)"
                     >
                       {{ actionBusyId === row.id ? '…' : 'Emitir Nubefact' }}
                     </button>
@@ -1154,6 +1208,39 @@ const precioColumnLabel = computed(() =>
             <button type="button" class="btn-ghost" :disabled="convertSubmitting" @click="cerrarConvertir">Cancelar</button>
             <button type="button" class="btn-primary" :disabled="convertSubmitting" @click="confirmarConvertir">
               {{ convertSubmitting ? '…' : 'Crear borrador' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="showNubefactAlmacenModal" class="modal-backdrop" @click.self="cerrarNubefactAlmacenModal">
+        <div class="modal-panel modal-panel--sm" role="dialog" aria-modal="true" aria-labelledby="nub-alm-title">
+          <h2 id="nub-alm-title" class="modal-title">Almacén para inventario</h2>
+          <p class="modal-lead">
+            Al emitir con Nubefact se registrará la <strong>salida de stock</strong> desde el almacén elegido (existencias /
+            kardex).
+          </p>
+          <label class="fld">
+            <span>Almacén</span>
+            <select v-model="nubefactAlmacenId" class="inp" :disabled="actionBusyId != null">
+              <option value="" disabled>Seleccionar…</option>
+              <option v-for="a in nubefactAlmacenes" :key="a.id" :value="a.id">{{ a.nombre }}</option>
+            </select>
+          </label>
+          <p v-if="nubefactAlmacenModalErr" class="form-err">{{ nubefactAlmacenModalErr }}</p>
+          <div class="modal-foot">
+            <button type="button" class="btn-ghost" :disabled="actionBusyId != null" @click="cerrarNubefactAlmacenModal">
+              Cancelar
+            </button>
+            <button
+              type="button"
+              class="btn-primary"
+              :disabled="actionBusyId != null || !nubefactAlmacenes.length"
+              @click="confirmarEmitirNubefactDesdeCotizacion"
+            >
+              {{ actionBusyId != null ? '…' : 'Emitir con Nubefact' }}
             </button>
           </div>
         </div>

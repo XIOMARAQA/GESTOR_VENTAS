@@ -7,8 +7,17 @@ from apps.ventas.models import CondicionPagoDocumento, EstadoDocumento
 
 
 class TipoDocumentoCompra(models.TextChoices):
-    FACTURA_COMPRA = "FACTURA_COMPRA", "Factura de compra"
-    NOTA_CREDITO_PROVEEDOR = "NOTA_CREDITO_PROVEEDOR", "Nota de crédito proveedor"
+    """
+    Tipos alineados en nombre con `TipoDocumentoVenta` (misma nomenclatura de comprobante).
+    Los códigos internos son propios de compras (sufijo _COMPRA / proveedor donde aplica).
+    """
+
+    FACTURA_COMPRA = "FACTURA_COMPRA", "Factura"
+    BOLETA_COMPRA = "BOLETA_COMPRA", "Boleta"
+    NOTA_COMPRA = "NOTA_COMPRA", "Nota de venta"
+    RESUMEN_COMPRAS = "RESUMEN_COMPRAS", "Resumen de boletas"
+    GUIA_REMISION_COMPRA = "GUIA_REMISION_COMPRA", "Guía de remisión"
+    NOTA_CREDITO_PROVEEDOR = "NOTA_CREDITO_PROVEEDOR", "Nota de crédito (proveedor)"
 
 
 class OrdenCompra(TimeStampedModel):

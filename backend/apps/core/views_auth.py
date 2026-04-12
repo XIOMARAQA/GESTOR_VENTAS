@@ -14,7 +14,11 @@ from rest_framework.views import APIView
 
 from apps.core.models import PerfilUsuario
 
-from apps.core.serializers_auth import LoginSerializer, RegistroEmpresaSerializer
+from apps.core.serializers_auth import (
+    CambiarPasswordSerializer,
+    LoginSerializer,
+    RegistroEmpresaSerializer,
+)
 
 
 
@@ -299,5 +303,61 @@ class LogoutView(APIView):
             Token.objects.filter(user=request.user).delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+
+
+
+class CambiarPasswordView(APIView):
+
+    """Cambio de contraseña del usuario en sesión (validación de la actual)."""
+
+
+
+    permission_classes = [IsAuthenticated]
+
+
+
+    def post(self, request):
+
+        ser = CambiarPasswordSerializer(data=request.data)
+
+        if not ser.is_valid():
+
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = request.user
+
+        if not user.check_password(ser.validated_data["password_actual"]):
+
+            return Response(
+
+                {"password_actual": ["La contraseña actual no es correcta."]},
+
+                status=status.HTTP_400_BAD_REQUEST,
+
+            )
+
+        user.set_password(ser.validated_data["password"])
+
+        user.save()
+
+        from apps.core.models import Usuario
+
+
+
+        email = (getattr(user, "email", None) or "").strip()
+
+        if email:
+
+            Usuario.objects.filter(email__iexact=email).update(password_hash=user.password)
+
+        return Response(
+
+            {"detail": "Contraseña actualizada correctamente."},
+
+            status=status.HTTP_200_OK,
+
+        )
 
 

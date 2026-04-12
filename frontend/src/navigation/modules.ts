@@ -91,8 +91,12 @@ export const navSections: NavSection[] = [
     label: 'Administración',
     children: [
       { to: '/admin/org', label: 'Empresa y sucursales', hint: 'empresa, sucursal' },
-      { to: '/admin/sistema', label: 'Parámetros del sistema', hint: 'configuracion_sistema' },
-      { to: '/admin/tareas', label: 'Tareas y pendientes', hint: 'tarea' },
+      {
+        to: '/admin/formato-comprobante-pdf',
+        label: 'Formato comprobante PDF',
+        hint: 'nubefact_pdf_formatos',
+      },
+      { to: '/admin/cambiar-contrasena', label: 'Cambiar contraseña', hint: 'auth' },
     ],
   },
   {

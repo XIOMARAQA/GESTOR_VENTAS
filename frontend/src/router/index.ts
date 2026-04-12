@@ -102,8 +102,16 @@ const router = createRouter({
           component: () => import('@/views/inventario/InvMovimientosView.vue'),
         },
         { path: 'admin/org', component: () => import('@/views/admin/OrgView.vue') },
-        { path: 'admin/sistema', component: () => import('@/views/admin/SistemaView.vue') },
-        { path: 'admin/tareas', component: () => import('@/views/admin/TareasView.vue') },
+        {
+          path: 'admin/formato-comprobante-pdf',
+          component: () => import('@/views/admin/FormatoComprobantePdfView.vue'),
+        },
+        {
+          path: 'admin/cambiar-contrasena',
+          component: () => import('@/views/admin/CambiarContrasenaView.vue'),
+        },
+        { path: 'admin/sistema', redirect: '/admin/formato-comprobante-pdf' },
+        { path: 'admin/tareas', redirect: '/admin/cambiar-contrasena' },
       ],
     },
   ],

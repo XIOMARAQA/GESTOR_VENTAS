@@ -12,6 +12,8 @@ from apps.core.models import (
 
 
 class EmpresaSerializer(serializers.ModelSerializer):
+    logo_comprobante_url = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = Empresa
         fields = [
@@ -26,8 +28,15 @@ class EmpresaSerializer(serializers.ModelSerializer):
             "registro_aprobado",
             "fecha_registro_aprobado",
             "creado_en",
+            "logo_comprobante",
+            "logo_comprobante_url",
         ]
-        read_only_fields = ["id", "creado_en", "fecha_registro_aprobado"]
+        read_only_fields = ["id", "creado_en", "fecha_registro_aprobado", "logo_comprobante_url"]
+
+    def get_logo_comprobante_url(self, obj):
+        if not obj.logo_comprobante:
+            return None
+        return obj.logo_comprobante.url
 
 
 class SucursalSerializer(serializers.ModelSerializer):
@@ -43,7 +52,7 @@ class SucursalSerializer(serializers.ModelSerializer):
             "direccion",
             "activo",
         ]
-        read_only_fields = ["id", "empresa_razon_social"]
+        read_only_fields = ["id", "empresa_razon_social", "empresa"]
 
 
 class ClienteSerializer(serializers.ModelSerializer):

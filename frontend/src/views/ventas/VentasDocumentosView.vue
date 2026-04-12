@@ -124,6 +124,7 @@ const rows = ref<DocRow[]>([])
 const totalCount = ref(0)
 const loading = ref(false)
 const errorMsg = ref('')
+const comprobanteVerError = ref('')
 const page = ref(1)
 const hasNext = ref(false)
 const hasPrev = ref(false)
@@ -390,10 +391,18 @@ function cerrarBannerBorrador() {
 async function emitirBorradorDesdeBanner() {
   const id = borradorQueryId.value
   if (typeof id !== 'number') return
+  if (borradorBannerAlmacenId.value === '' || borradorBannerAlmacenId.value == null) {
+    borradorBannerErr.value =
+      'Seleccione el almacén: la emisión registrará la salida de inventario vinculada a ese depósito.'
+    return
+  }
   borradorEmitLoading.value = true
   borradorBannerErr.value = ''
   try {
-    await api.post('/ventas/nubefact/emitir/', { documento_id: id })
+    await api.post('/ventas/nubefact/emitir/', {
+      documento_id: id,
+      almacen_id: Number(borradorBannerAlmacenId.value),
+    })
     router.replace({ path: '/ventas/documentos' })
     borradorQueryId.value = null
     await load()
@@ -422,14 +431,14 @@ function refresh() {
   load()
 }
 
-const ctx = useAppContextStore()
-
 type ItemCat = {
   id: number
   codigo?: string
   nombre: string
   unidad_medida_codigo?: string
 }
+
+type AlmCat = { id: number; nombre: string }
 
 type ClienteCat = {
   id: number
@@ -445,6 +454,37 @@ type LineaForm = {
   cantidad: string
   precio_unit: string
 }
+
+const ctx = useAppContextStore()
+
+const almacenesCatalog = ref<AlmCat[]>([])
+const bannerAlmacenesCatalog = ref<AlmCat[]>([])
+const borradorBannerAlmacenId = ref<number | ''>('')
+
+watch(
+  borradorQueryId,
+  async (id) => {
+    borradorBannerAlmacenId.value = ''
+    borradorBannerErr.value = ''
+    if (typeof id !== 'number') {
+      bannerAlmacenesCatalog.value = []
+      return
+    }
+    const params = new URLSearchParams()
+    params.set('page_size', '500')
+    params.set('ordering', 'nombre')
+    params.set('activo', '1')
+    const emp = ctx.empresaId
+    if (emp) params.set('empresa', String(emp))
+    try {
+      const { data } = await api.get<{ results?: AlmCat[] }>(`/inventario/almacenes/?${params}`)
+      bannerAlmacenesCatalog.value = Array.isArray(data) ? data : (data.results ?? [])
+    } catch {
+      bannerAlmacenesCatalog.value = []
+    }
+  },
+  { immediate: true },
+)
 
 const showComprobanteModal = ref(false)
 const catalogLoading = ref(false)
@@ -471,6 +511,7 @@ const formCab = reactive({
   medio_pago: 'TRANSFERENCIA',
   tipo_operacion: 'VENTA_INTERNA',
   vendedor_id: '' as number | '',
+  almacen_id: '' as number | '',
 })
 
 const formCliente = reactive({
@@ -607,13 +648,21 @@ async function consultarPadronCliente() {
         ok?: boolean
         nombre_padron?: string
         razon_social?: string
+        direccion?: string
         detail?: string
       }>('/core/consultar-ruc/', { params: { numero: n } })
       if (data.ok) {
         const pad = (data.nombre_padron || data.razon_social || '').trim()
+        const dirSunat = typeof data.direccion === 'string' ? data.direccion.trim() : ''
         if (pad) {
           formCliente.razon_social = pad.slice(0, 255)
-          clienteConsultMsg.value = 'Razón social sugerida por SUNAT (revise antes de emitir).'
+          if (dirSunat) {
+            formCliente.direccion = dirSunat.slice(0, 2000)
+            clienteConsultMsg.value =
+              'Razón social y dirección sugeridas por SUNAT (revise antes de emitir).'
+          } else {
+            clienteConsultMsg.value = 'Razón social sugerida por SUNAT (revise antes de emitir).'
+          }
           clienteConsultIsError.value = false
         } else {
           clienteConsultMsg.value = 'SUNAT no devolvió nombre para este RUC.'
@@ -680,6 +729,7 @@ async function openComprobanteModal() {
   formCab.medio_pago = 'TRANSFERENCIA'
   formCab.tipo_operacion = 'VENTA_INTERNA'
   formCab.vendedor_id = ''
+  formCab.almacen_id = ''
   formCliente.tipo_doc = 'RUC'
   formCliente.documento = ''
   formCliente.razon_social = ''
@@ -691,9 +741,16 @@ async function openComprobanteModal() {
   itemCatalog.value = []
   clientesCatalog.value = []
   vendedoresCatalog.value = []
+  almacenesCatalog.value = []
   seriesNubefact.value = { ...EMPTY_SERIES_NUBEFACT }
   try {
-    const [itemsRes, cliRes, vendRes, nubCfgRes] = await Promise.all([
+    const almParams = new URLSearchParams()
+    almParams.set('page_size', '500')
+    almParams.set('ordering', 'nombre')
+    almParams.set('activo', '1')
+    const empAlm = ctx.empresaId
+    if (empAlm) almParams.set('empresa', String(empAlm))
+    const [itemsRes, cliRes, vendRes, nubCfgRes, almRes] = await Promise.all([
       api.get<{ results?: ItemCat[] }>('/inventario/items/?page_size=500').catch(() => null),
       api
         .get<{ results?: ClienteCat[] }>('/core/clientes/?page_size=500&ordering=razon_social')
@@ -702,6 +759,7 @@ async function openComprobanteModal() {
       api
         .get<{ series?: Record<string, unknown> }>('/ventas/nubefact/config/')
         .catch(() => null),
+      api.get<{ results?: AlmCat[] }>(`/inventario/almacenes/?${almParams}`).catch(() => null),
     ])
     mergeSeriesDesdeApi(nubCfgRes?.data?.series)
     formCab.tipo = 'FACTURA'
@@ -712,6 +770,8 @@ async function openComprobanteModal() {
     const vd = vendRes?.data
     const rawV = Array.isArray(vd) ? vd : (vd?.results ?? [])
     vendedoresCatalog.value = rawV.filter((v) => v.activo !== false)
+    const ad = almRes?.data
+    almacenesCatalog.value = Array.isArray(ad) ? ad : (ad?.results ?? [])
   } finally {
     catalogLoading.value = false
   }
@@ -721,7 +781,7 @@ function cerrarComprobanteModal() {
   showComprobanteModal.value = false
 }
 
-function validateComprobanteForm(): string | null {
+function validateComprobanteForm(opts?: { requerirAlmacen: boolean }): string | null {
   const doc = formCliente.documento.trim()
   if (!doc) return 'Ingrese el número de documento del cliente.'
   if (formCliente.tipo_doc === 'RUC' && !/^\d{11}$/.test(doc))
@@ -731,11 +791,20 @@ function validateComprobanteForm(): string | null {
 
   if (!formCab.serie.trim()) return 'Indique la serie del comprobante (defínala en .env o escríbala).'
 
+  if (opts?.requerirAlmacen) {
+    if (formCab.almacen_id === '' || formCab.almacen_id == null) {
+      return 'Seleccione el almacén: la emisión descontará inventario (salida) en factura o boleta.'
+    }
+  }
+
   if (formCab.condicion_pago === 'CREDITO') {
     const fv = formCab.fecha_vencimiento.trim()
     if (!fv) return 'En venta a crédito indique la fecha de vencimiento.'
     if (formCab.fecha_emision && fv < formCab.fecha_emision)
       return 'La fecha de vencimiento no puede ser anterior a la fecha de emisión.'
+    const mpCred = (formCab.medio_pago || '').trim()
+    if (mpCred && !mediosPagoOptions.some((o) => o.value === mpCred))
+      return 'Medio de pago no válido.'
   } else {
     const mp = (formCab.medio_pago || '').trim()
     if (!mp) return 'Seleccione el medio de pago (venta al contado).'
@@ -777,7 +846,8 @@ async function postAltaBorrador(): Promise<number> {
   }
   if (formCab.condicion_pago === 'CREDITO') {
     body.fecha_vencimiento = formCab.fecha_vencimiento.trim() || null
-    body.medio_pago = ''
+    const mpCred = (formCab.medio_pago || '').trim()
+    body.medio_pago = mediosPagoOptions.some((o) => o.value === mpCred) ? mpCred : ''
   } else {
     body.medio_pago = formCab.medio_pago
     body.fecha_vencimiento = null
@@ -824,7 +894,7 @@ async function soloGuardarBorrador() {
 }
 
 async function emitirComprobante() {
-  const err = validateComprobanteForm()
+  const err = validateComprobanteForm({ requerirAlmacen: true })
   if (err) {
     nubError.value = err
     return
@@ -833,7 +903,10 @@ async function emitirComprobante() {
   nubError.value = ''
   try {
     const docId = await postAltaBorrador()
-    await api.post('/ventas/nubefact/emitir/', { documento_id: docId })
+    await api.post('/ventas/nubefact/emitir/', {
+      documento_id: docId,
+      almacen_id: Number(formCab.almacen_id),
+    })
     cerrarComprobanteModal()
     load()
   } catch (e) {
@@ -846,6 +919,42 @@ async function emitirComprobante() {
 function pdfLink(row: DocRow): string | null {
   const u = row.nubefact_enlace
   return typeof u === 'string' && u.startsWith('http') ? u : null
+}
+
+async function abrirVistaComprobante(row: DocRow) {
+  comprobanteVerError.value = ''
+  const id = row.id
+  if (typeof id !== 'number') return
+  try {
+    const { data } = await api.get<string>(`/ventas/documentos/${id}/vista-comprobante/`, {
+      responseType: 'text',
+      headers: { Accept: 'text/html' },
+    })
+    const blob = new Blob([data], { type: 'text/html;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const w = window.open(url, '_blank', 'noopener,noreferrer')
+    if (w) {
+      setTimeout(() => URL.revokeObjectURL(url), 120_000)
+    } else {
+      URL.revokeObjectURL(url)
+      comprobanteVerError.value = 'Permita ventanas emergentes para ver el comprobante con el formato configurado.'
+    }
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.data) {
+      const d = e.response.data
+      if (typeof d === 'string' && d.trim()) {
+        comprobanteVerError.value = d.replace(/<[^>]+>/g, '').trim().slice(0, 280) || 'No se pudo cargar la vista.'
+      } else if (typeof d === 'object' && d !== null && 'detail' in d) {
+        const det = (d as { detail?: unknown }).detail
+        comprobanteVerError.value =
+          typeof det === 'string' ? det : Array.isArray(det) ? det.map(String).join(' ') : 'No se pudo cargar la vista.'
+      } else {
+        comprobanteVerError.value = 'No se pudo cargar la vista del comprobante.'
+      }
+    } else {
+      comprobanteVerError.value = 'No se pudo cargar la vista del comprobante.'
+    }
+  }
 }
 </script>
 
@@ -872,11 +981,18 @@ function pdfLink(row: DocRow): string | null {
           y emitirlo desde el formulario.
         </p>
         <p v-if="borradorBannerErr" class="borrador-banner__err">{{ borradorBannerErr }}</p>
+        <label class="borrador-banner__field">
+          <span class="borrador-banner__lab">Almacén (salida de inventario)</span>
+          <select v-model="borradorBannerAlmacenId" class="borrador-banner__select" :disabled="borradorEmitLoading">
+            <option value="" disabled>Seleccionar…</option>
+            <option v-for="a in bannerAlmacenesCatalog" :key="a.id" :value="a.id">{{ a.nombre }}</option>
+          </select>
+        </label>
         <div class="borrador-banner__actions">
           <button
             type="button"
             class="btn-create btn-create--compact"
-            :disabled="borradorEmitLoading"
+            :disabled="borradorEmitLoading || !bannerAlmacenesCatalog.length"
             @click="emitirBorradorDesdeBanner"
           >
             {{ borradorEmitLoading ? 'Emitiendo…' : 'Emitir con Nubefact' }}
@@ -939,6 +1055,7 @@ function pdfLink(row: DocRow): string | null {
     </section>
 
     <p v-if="errorMsg" class="err-banner">{{ errorMsg }}</p>
+    <p v-if="comprobanteVerError" class="err-banner">{{ comprobanteVerError }}</p>
 
     <div class="table-head">
       <span class="total">Total registros: {{ totalCount }}</span>
@@ -1024,15 +1141,20 @@ function pdfLink(row: DocRow): string | null {
                   </button>
                   <span v-else class="muted-cell">—</span>
                 </td>
-                <td>
-                  <a
-                    v-if="pdfLink(row)"
-                    :href="pdfLink(row)!"
-                    class="link-pdf"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    >Ver</a
-                  >
+                <td class="td-pdf-actions">
+                  <template v-if="typeof row.id === 'number'">
+                    <a href="#" class="link-pdf" @click.prevent="abrirVistaComprobante(row)">Ver</a>
+                    <template v-if="pdfLink(row)">
+                      <span class="muted-sep" aria-hidden="true"> · </span>
+                      <a
+                        :href="pdfLink(row)!"
+                        class="link-pdf link-pdf--sunat"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        >SUNAT</a
+                      >
+                    </template>
+                  </template>
                   <span v-else class="muted-cell">—</span>
                 </td>
               </tr>
@@ -1154,6 +1276,15 @@ function pdfLink(row: DocRow): string | null {
                   <input v-model="formCab.fecha_vencimiento" type="date" class="modal-inp" />
                 </label>
               </div>
+              <label v-if="formCab.condicion_pago === 'CREDITO'" class="modal-field">
+                <span class="modal-lab">Medio de pago (opcional)</span>
+                <select v-model="formCab.medio_pago" class="modal-inp">
+                  <option value="">— Sin indicar —</option>
+                  <option v-for="opt in mediosPagoOptions" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                </select>
+              </label>
               <div class="form-row-2">
                 <label class="modal-field">
                   <span class="modal-lab">Operación</span>
@@ -1173,6 +1304,16 @@ function pdfLink(row: DocRow): string | null {
                   </select>
                 </label>
               </div>
+              <label class="modal-field">
+                <span class="modal-lab">Almacén</span>
+                <select v-model="formCab.almacen_id" class="modal-inp" :disabled="catalogLoading">
+                  <option value="" disabled>Seleccionar…</option>
+                  <option v-for="a in almacenesCatalog" :key="a.id" :value="a.id">{{ a.nombre }}</option>
+                </select>
+                <span class="modal-almacen-hint"
+                  >Al emitir, se registra la <strong>salida</strong> de mercadería en este almacén (kardex / existencias).</span
+                >
+              </label>
               <label class="modal-field">
                 <span class="modal-lab">Observación</span>
                 <textarea
@@ -1266,12 +1407,16 @@ function pdfLink(row: DocRow): string | null {
                 />
               </label>
               <label class="modal-field">
-                <span class="modal-lab">Correo</span>
-                <input v-model="formCliente.email" type="email" class="modal-inp" placeholder="opcional" />
+                <span class="modal-lab">Dirección</span>
+                <input
+                  v-model="formCliente.direccion"
+                  class="modal-inp"
+                  placeholder="Dirección fiscal o de entrega (opcional)"
+                />
               </label>
               <label class="modal-field">
-                <span class="modal-lab">Dirección</span>
-                <input v-model="formCliente.direccion" class="modal-inp" placeholder="opcional" />
+                <span class="modal-lab">Correo</span>
+                <input v-model="formCliente.email" type="email" class="modal-inp" placeholder="opcional" />
               </label>
             </section>
           </div>
@@ -1564,6 +1709,30 @@ function pdfLink(row: DocRow): string | null {
   background: #fef2f2;
   color: #b91c1c;
   font-size: 0.8rem;
+}
+
+.borrador-banner__field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.55rem;
+  max-width: 22rem;
+}
+
+.borrador-banner__lab {
+  font-weight: 600;
+  font-size: 0.78rem;
+  color: #075985;
+}
+
+.borrador-banner__select {
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid #7dd3fc;
+  background: #fff;
+  font-size: 0.82rem;
+  color: #0c4a6e;
+  font-family: inherit;
 }
 
 .borrador-banner__actions {
@@ -1972,6 +2141,20 @@ function pdfLink(row: DocRow): string | null {
   color: #0284c7;
 }
 
+.td-pdf-actions {
+  white-space: nowrap;
+}
+
+.muted-sep {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.link-pdf--sunat {
+  font-weight: 600;
+  color: #64748b;
+}
+
 .muted-cell {
   color: #64748b;
 }
@@ -2024,6 +2207,13 @@ function pdfLink(row: DocRow): string | null {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #64748b;
+}
+
+.modal-almacen-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #64748b;
+  line-height: 1.45;
 }
 
 .modal-inp {

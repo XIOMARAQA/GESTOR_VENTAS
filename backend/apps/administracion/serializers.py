@@ -7,7 +7,7 @@ class ConfiguracionSistemaSerializer(serializers.ModelSerializer):
     class Meta:
         model = ConfiguracionSistema
         fields = "__all__"
-        read_only_fields = ["creado_en", "actualizado_en"]
+        read_only_fields = ["creado_en", "actualizado_en", "empresa"]
 
 
 class TareaSerializer(serializers.ModelSerializer):

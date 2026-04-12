@@ -54,6 +54,7 @@ class TestDocumentoVentaEmitir:
         DocumentoVentaService.emitir(doc, almacen=self.almacen)
         doc.refresh_from_db()
         assert doc.estado == EstadoDocumento.EMITIDO
+        assert doc.almacen_id == self.almacen.pk
         stock = Stock.objects.get(item=self.item, almacen=self.almacen)
         assert stock.cantidad == Decimal("8")
         cob = Cobranza.objects.get(documento_venta=doc)
@@ -110,3 +111,48 @@ class TestDocumentoVentaEmitir:
         )
         with pytest.raises(StockInsuficienteError):
             DocumentoVentaService.emitir(doc, almacen=self.almacen)
+
+    def test_emitir_nota_credito_cliente_suma_stock(self):
+        doc = DocumentoVenta.objects.create(
+            empresa=self.empresa,
+            sucursal=self.sucursal,
+            tipo=TipoDocumentoVenta.NOTA_CREDITO_CLIENTE,
+            fecha_emision="2026-04-01",
+            estado=EstadoDocumento.BORRADOR,
+            subtotal=Decimal("100"),
+            igv=Decimal("18"),
+            total=Decimal("118"),
+        )
+        DocumentoVentaLinea.objects.create(
+            documento=doc,
+            item=self.item,
+            cantidad=Decimal("3"),
+            precio_unit=Decimal("33.33"),
+            subtotal=Decimal("100"),
+        )
+        DocumentoVentaService.emitir(doc, almacen=self.almacen)
+        stock = Stock.objects.get(item=self.item, almacen=self.almacen)
+        assert stock.cantidad == Decimal("13")
+        assert not Cobranza.objects.filter(documento_venta=doc).exists()
+
+    def test_emitir_guia_remision_no_mueve_stock(self):
+        doc = DocumentoVenta.objects.create(
+            empresa=self.empresa,
+            tipo=TipoDocumentoVenta.GUIA_REMISION,
+            fecha_emision="2026-04-01",
+            estado=EstadoDocumento.BORRADOR,
+            subtotal=Decimal("50"),
+            igv=Decimal("9"),
+            total=Decimal("59"),
+        )
+        DocumentoVentaLinea.objects.create(
+            documento=doc,
+            item=self.item,
+            cantidad=Decimal("1"),
+            precio_unit=Decimal("50"),
+            subtotal=Decimal("50"),
+        )
+        DocumentoVentaService.emitir(doc, almacen=self.almacen)
+        stock = Stock.objects.get(item=self.item, almacen=self.almacen)
+        assert stock.cantidad == Decimal("10")
+        assert Cobranza.objects.filter(documento_venta=doc).exists()

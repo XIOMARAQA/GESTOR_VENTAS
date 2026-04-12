@@ -114,6 +114,115 @@ def _provider_error_detail(data: dict) -> str | None:
     return None
 
 
+def _str_clean(v: object) -> str:
+    if isinstance(v, str):
+        return v.strip()
+    return ""
+
+
+def _get_field_ci(d: dict, *keys: str) -> str:
+    """Obtiene el primer valor string no vacío entre varias claves (y variantes en minúsculas)."""
+    for k in keys:
+        s = _str_clean(d.get(k))
+        if s:
+            return s
+    lower_map = {str(a).lower(): a for a in d}
+    for k in keys:
+        orig = lower_map.get(k.lower())
+        if orig is not None:
+            s = _str_clean(d.get(orig))
+            if s:
+                return s
+    return ""
+
+
+def _walk_nested_dicts(root: dict, seen: set[int], out: list[dict]) -> None:
+    i = id(root)
+    if i in seen:
+        return
+    seen.add(i)
+    out.append(root)
+    for k in ("data", "Data", "result", "resultado", "contribuyente", "payload", "body"):
+        n = root.get(k)
+        if isinstance(n, dict):
+            _walk_nested_dicts(n, seen, out)
+
+
+def _all_dict_nodes(data: dict) -> list[dict]:
+    out: list[dict] = []
+    _walk_nested_dicts(data, set(), out)
+    return out
+
+
+def _compose_direccion_desde_partes_sunat(d: dict) -> str:
+    """Arma texto tipo padrón SUNAT (viaTipo + viaNombre + NRO + distrito/provincia/departamento)."""
+    via_t = _get_field_ci(d, "viaTipo", "via_tipo", "tipoVia", "tipo_via")
+    via_n = _get_field_ci(d, "viaNombre", "via_nombre", "nombreVia", "nombre_via")
+    nro = _get_field_ci(d, "numero", "nro", "Nro", "Numero")
+    inter = _get_field_ci(d, "interior", "int", "Interior")
+    dpto_int = _get_field_ci(d, "dpto", "Dpto")
+    zona_t = _get_field_ci(d, "zonaTipo", "zona_tipo")
+    zona_c = _get_field_ci(d, "zonaCodigo", "zona_codigo")
+    lote = _get_field_ci(d, "lote", "Lote")
+    mza = _get_field_ci(d, "manzana", "Manzana")
+
+    calle = f"{via_t} {via_n}".strip()
+    parts: list[str] = []
+    if calle:
+        parts.append(calle)
+    if nro:
+        parts.append(f"NRO. {nro}")
+    for bit in (inter, dpto_int, lote, mza):
+        if bit:
+            parts.append(bit)
+    z = f"{zona_t} {zona_c}".strip()
+    if z:
+        parts.append(z)
+    head = " ".join(parts).strip()
+
+    dist = _get_field_ci(d, "distrito", "Distrito")
+    prov = _get_field_ci(d, "provincia", "Provincia")
+    dep = _get_field_ci(d, "departamento", "Departamento")
+    geo = " — ".join(x for x in (dist, prov, dep) if x)
+    ubi = _get_field_ci(d, "ubigeo", "Ubigeo")
+    if geo and ubi:
+        geo = f"{geo} (Ubigeo {ubi})"
+    elif ubi and not geo:
+        geo = f"Ubigeo {ubi}"
+
+    if head and geo:
+        return f"{head} — {geo}"
+    return head or geo
+
+
+def direccion_desde_respuesta_proveedor_ruc(data: dict) -> str:
+    """
+    Extrae domicilio fiscal / dirección del JSON del proveedor (apis.net.pe, Decolecta, etc.).
+    """
+    for node in _all_dict_nodes(data):
+        direct = _get_field_ci(
+            node,
+            "direccion",
+            "direccion_completa",
+            "direccionCompleta",
+            "domicilio_fiscal",
+            "domicilioFiscal",
+            "domicilio",
+            "Direccion",
+            "direccion_establecimiento",
+            "direccionEstablecimiento",
+            "direccion_fiscal",
+            "direccionFiscal",
+        )
+        if direct:
+            return direct[:2000]
+    for node in _all_dict_nodes(data):
+        comp = _compose_direccion_desde_partes_sunat(node)
+        if comp:
+            return comp[:2000]
+    return ""
+
+
 class ConsultarRucSunatView(APIView):
     """
     GET ?numero=20123456789
@@ -122,6 +231,7 @@ class ConsultarRucSunatView(APIView):
       - es_persona_juridica: true si RUC inicia en 20
       - razon_social: nombre de empresa (solo sentido para PJ; rellenado con el texto del padrón)
       - nombre_padron: texto tal cual en padrón (razonSocial o nombre)
+      - direccion: domicilio fiscal si el proveedor lo devuelve (apis.net.pe / Decolecta)
     Persona natural: usar nombre_padron y repartir apellidos/nombres en el cliente.
     """
 
@@ -326,5 +436,8 @@ class ConsultarRucSunatView(APIView):
             payload["sunat_estado"] = estado.strip()
         if isinstance(condicion, str) and condicion.strip():
             payload["sunat_condicion"] = condicion.strip()
+
+        dir_padron = direccion_desde_respuesta_proveedor_ruc(data)
+        payload["direccion"] = dir_padron
 
         return Response(payload)

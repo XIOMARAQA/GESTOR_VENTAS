@@ -164,6 +164,11 @@ class Almacen(TimeStampedModel):
         Sucursal, on_delete=models.CASCADE, related_name="almacenes"
     )
     nombre = models.CharField(max_length=120)
+    direccion = models.TextField(
+        blank=True,
+        default="",
+        help_text="Ubicación física o referencia del almacén (opcional).",
+    )
     es_principal = models.BooleanField(default=False)
     activo = models.BooleanField(
         default=True,

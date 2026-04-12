@@ -11,6 +11,7 @@ type SucursalOpt = { id: number; nombre: string; empresa?: number }
 type Row = {
   id: number
   nombre: string
+  direccion?: string
   sucursal: number
   sucursal_nombre?: string | null
   es_principal?: boolean
@@ -35,6 +36,7 @@ const editingId = ref<number | null>(null)
 const form = ref({
   sucursal_id: '' as number | '',
   nombre: '',
+  direccion: '',
   es_principal: false,
   activo: true,
 })
@@ -98,6 +100,7 @@ function openNuevo() {
   form.value = {
     sucursal_id: only != null ? only.id : '',
     nombre: '',
+    direccion: '',
     es_principal: false,
     activo: true,
   }
@@ -113,6 +116,7 @@ async function openEdit(r: Row) {
     form.value = {
       sucursal_id: data.sucursal,
       nombre: (data.nombre ?? '').toString(),
+      direccion: (data.direccion ?? '').toString(),
       es_principal: data.es_principal === true,
       activo: data.activo !== false,
     }
@@ -158,6 +162,7 @@ async function guardar() {
     const body: Record<string, unknown> = {
       sucursal: f.sucursal_id,
       nombre: f.nombre.trim().slice(0, 120),
+      direccion: f.direccion.trim(),
       es_principal: f.es_principal,
       activo: f.activo,
     }
@@ -296,6 +301,7 @@ onMounted(load)
               <tr>
                 <th>Nombre</th>
                 <th>Sucursal</th>
+                <th>Dirección</th>
                 <th>Principal</th>
                 <th>Activo</th>
                 <th class="th-act">Acciones</th>
@@ -305,6 +311,7 @@ onMounted(load)
               <tr v-for="r in filtradas" :key="r.id">
                 <td class="td-name">{{ r.nombre }}</td>
                 <td>{{ sucursalLabel(r) }}</td>
+                <td class="td-dir">{{ (r.direccion || '').trim() || '—' }}</td>
                 <td>
                   <span class="pill" :class="r.es_principal ? 'pill--pri' : 'pill--off'">{{
                     r.es_principal ? 'Sí' : 'No'
@@ -381,6 +388,10 @@ onMounted(load)
           <label class="field">
             <span class="lab">Nombre</span>
             <input v-model="form.nombre" class="inp inp--wide" maxlength="120" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="lab">Dirección</span>
+            <textarea v-model="form.direccion" class="inp inp--wide inp--area" rows="2" autocomplete="street-address" />
           </label>
           <label class="field row-check">
             <input v-model="form.es_principal" type="checkbox" />
@@ -524,6 +535,12 @@ onMounted(load)
   min-width: 0;
   box-sizing: border-box;
 }
+.inp--area {
+  resize: vertical;
+  min-height: 2.75rem;
+  font-family: inherit;
+  line-height: 1.4;
+}
 .total {
   margin: 0;
   font-size: 0.8rem;
@@ -609,6 +626,13 @@ onMounted(load)
 }
 .td-name {
   font-weight: 600;
+}
+.td-dir {
+  max-width: 14rem;
+  word-break: break-word;
+  color: #475569;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 .td-act {
   vertical-align: middle;

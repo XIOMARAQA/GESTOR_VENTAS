@@ -45,6 +45,12 @@ class Empresa(models.Model):
         blank=True,
         help_text="Momento en que un superusuario aprobó el registro web (si aplica).",
     )
+    logo_comprobante = models.FileField(
+        upload_to="logos_comprobante/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text="Logo en comprobantes (recomendado máx. 430×150 px; PNG o JPG).",
+    )
     creado_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:

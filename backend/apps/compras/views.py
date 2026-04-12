@@ -25,6 +25,8 @@ from apps.compras.serializers import (
 )
 from apps.compras.services.documento_compra_service import DocumentoCompraService
 from apps.inventario.models import Almacen, Item
+from apps.inventario.services.stock_service import StockInsuficienteError
+from apps.ventas.models import EstadoDocumento
 
 
 class OrdenCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
@@ -52,7 +54,7 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["fecha", "creado_en", "total", "estado"]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().exclude(estado=EstadoDocumento.ANULADO)
         doc_pk = (self.request.query_params.get("documento") or "").strip()
         if doc_pk.isdigit():
             qs = qs.filter(pk=int(doc_pk))
@@ -175,6 +177,89 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
         doc.refresh_from_db()
         return Response(DocumentoCompraSerializer(doc).data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=["patch"], url_path="actualizar-borrador")
+    @transaction.atomic
+    def actualizar_borrador(self, request, pk=None):
+        doc = self.get_object()
+        if doc.estado != EstadoDocumento.BORRADOR:
+            return Response(
+                {"detail": "Solo se puede editar un documento en borrador."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ser = DocumentoCompraAltaBorradorSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        proveedor = Proveedor.objects.filter(
+            pk=data["proveedor_id"], empresa_id=doc.empresa_id
+        ).first()
+        if proveedor is None:
+            return Response(
+                {"detail": "El proveedor no existe en esta empresa."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lineas_in = data["lineas"]
+        if not lineas_in:
+            return Response(
+                {"detail": "Debe indicar al menos una línea."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        incluye = bool(data.get("precio_incluye_igv"))
+        factor_igv = Decimal("1.18")
+
+        doc.tipo = data["tipo"]
+        doc.proveedor = proveedor
+        doc.serie = (data.get("serie") or "").strip()[:10]
+        doc.numero = (data.get("numero") or "").strip()[:20]
+        doc.fecha = data["fecha"]
+        doc.condicion_pago = data["condicion_pago"]
+        doc.fecha_vencimiento = data.get("fecha_vencimiento")
+        doc.precio_incluye_igv = incluye
+        doc.save()
+
+        DocumentoCompraLinea.objects.filter(documento=doc).delete()
+        for ln in lineas_in:
+            item = Item.objects.filter(pk=ln["item_id"], empresa_id=doc.empresa_id).first()
+            if not item:
+                return Response(
+                    {"detail": f"El ítem {ln['item_id']} no existe en esta empresa."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            cant = ln["cantidad"]
+            pu = ln["precio_unit"]
+            if incluye:
+                pu = (pu / factor_igv).quantize(Decimal("0.0001"))
+            sub = (cant * pu).quantize(Decimal("0.01"))
+            DocumentoCompraLinea.objects.create(
+                documento=doc,
+                item=item,
+                cantidad=cant,
+                precio_unit=pu,
+                subtotal=sub,
+            )
+
+        DocumentoCompraService.recalcular_totales(doc)
+        doc.refresh_from_db()
+        return Response(DocumentoCompraSerializer(doc).data)
+
+    @action(detail=True, methods=["post"], url_path="anular")
+    @transaction.atomic
+    def anular(self, request, pk=None):
+        doc = self.get_object()
+        try:
+            DocumentoCompraService.anular(
+                doc,
+                usuario=request.user if request.user.is_authenticated else None,
+            )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except StockInsuficienteError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+        doc.refresh_from_db()
+        return Response(DocumentoCompraSerializer(doc).data)
+
     @action(detail=True, methods=["post"], url_path="emitir")
     def emitir(self, request, pk=None):
         doc = self.get_object()
@@ -193,6 +278,8 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             )
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except StockInsuficienteError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
         return Response(DocumentoCompraSerializer(doc).data)
 
 

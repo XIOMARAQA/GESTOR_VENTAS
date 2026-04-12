@@ -33,6 +33,8 @@ from apps.inventario.serializers import (
 )
 from apps.inventario.item_excel import build_items_template_xlsx, import_items_xlsx
 from apps.inventario.sunat_tabla6 import TABLA6_UNIDADES
+from apps.compras.models import DocumentoCompra
+from apps.ventas.models import DocumentoVenta
 
 
 def _resolve_empresa_id_for_item_import(request):
@@ -102,6 +104,18 @@ class ItemViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
     serializer_class = ItemSerializer
     search_fields = ["nombre", "codigo"]
     ordering = ["nombre"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            raw = self.request.query_params.get("empresa")
+            if raw not in (None, ""):
+                try:
+                    qs = qs.filter(empresa_id=int(raw))
+                except (TypeError, ValueError):
+                    pass
+        return qs
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -193,6 +207,14 @@ class AlmacenViewSet(EmpresaQuerysetMixin, viewsets.ModelViewSet):
         raw = (self.request.query_params.get("activo") or "").strip().lower()
         if raw in ("1", "true", "yes", "si"):
             qs = qs.filter(activo=True)
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            empresa_q = self.request.query_params.get("empresa")
+            if empresa_q not in (None, ""):
+                try:
+                    qs = qs.filter(sucursal__empresa_id=int(empresa_q))
+                except (TypeError, ValueError):
+                    pass
         return qs
 
     def perform_create(self, serializer):
@@ -221,12 +243,103 @@ class StockViewSet(EmpresaQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = StockSerializer
     empresa_lookup = "item__empresa_id"
 
+    def get_queryset(self):
+        qs = (
+            super()
+            .get_queryset()
+            .select_related("item", "almacen")
+            .order_by("almacen__nombre", "item__codigo", "item__nombre")
+        )
+        p = self.request.query_params
+        codigo = (p.get("codigo") or "").strip()
+        if codigo:
+            qs = qs.filter(item__codigo__icontains=codigo)
+        nombre = (p.get("nombre_producto") or p.get("nombre") or "").strip()
+        if nombre:
+            qs = qs.filter(item__nombre__icontains=nombre)
+        almacen = p.get("almacen")
+        if almacen not in (None, ""):
+            try:
+                qs = qs.filter(almacen_id=int(almacen))
+            except (TypeError, ValueError):
+                pass
+        producto = p.get("producto") or p.get("item")
+        if producto not in (None, ""):
+            try:
+                qs = qs.filter(item_id=int(producto))
+            except (TypeError, ValueError):
+                pass
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            empresa_q = p.get("empresa")
+            if empresa_q not in (None, ""):
+                try:
+                    qs = qs.filter(item__empresa_id=int(empresa_q))
+                except (TypeError, ValueError):
+                    pass
+        return qs
+
 
 class MovimientoStockViewSet(EmpresaQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = MovimientoStock.objects.select_related(
         "empresa", "almacen", "usuario"
     ).prefetch_related("lineas")
     serializer_class = MovimientoStockSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().order_by("-creado_en")
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            empresa_q = self.request.query_params.get("empresa")
+            if empresa_q not in (None, ""):
+                try:
+                    qs = qs.filter(empresa_id=int(empresa_q))
+                except (TypeError, ValueError):
+                    pass
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        movements = list(page) if page is not None else list(queryset)
+
+        ids_venta = [
+            m.referencia_id
+            for m in movements
+            if (m.referencia_tipo or "").strip() == "DOCUMENTO_VENTA" and m.referencia_id
+        ]
+        ids_compra = [
+            m.referencia_id
+            for m in movements
+            if (m.referencia_tipo or "").strip() == "DOCUMENTO_COMPRA" and m.referencia_id
+        ]
+
+        tipo_comp_venta = {}
+        if ids_venta:
+            for d in DocumentoVenta.objects.filter(pk__in=set(ids_venta)).only(
+                "id", "tipo"
+            ):
+                tipo_comp_venta[d.pk] = d.get_tipo_display()
+
+        tipo_comp_compra = {}
+        if ids_compra:
+            for d in DocumentoCompra.objects.filter(pk__in=set(ids_compra)).only(
+                "id", "tipo"
+            ):
+                tipo_comp_compra[d.pk] = d.get_tipo_display()
+
+        serializer = self.get_serializer(
+            movements,
+            many=True,
+            context={
+                **self.get_serializer_context(),
+                "tipo_comp_venta": tipo_comp_venta,
+                "tipo_comp_compra": tipo_comp_compra,
+            },
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
 
 class ListaPrecioViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):

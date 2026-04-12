@@ -27,6 +27,44 @@ logger = logging.getLogger(__name__)
 
 IGV_PCT = Decimal("0.18")
 
+NUBEFACT_PDF_FORMATOS_CLAVE = "nubefact_pdf_formatos"
+
+
+def obtener_formato_pdf_nubefact(empresa_id: int | None, tipo: str) -> str:
+    """
+    Formato del PDF enviado a Nubefact (A4 o TICKET), configurable por empresa en administracion.
+    Por defecto: factura → A4, boleta → TICKET.
+    """
+    if tipo == TipoDocumentoVenta.FACTURA:
+        default = "A4"
+        key = "factura"
+    elif tipo == TipoDocumentoVenta.BOLETA:
+        default = "TICKET"
+        key = "boleta"
+    else:
+        default = "A4"
+        key = "factura"
+    if not empresa_id:
+        return default
+    try:
+        from apps.administracion.models import ConfiguracionSistema
+
+        row = ConfiguracionSistema.objects.filter(
+            empresa_id=int(empresa_id),
+            clave=NUBEFACT_PDF_FORMATOS_CLAVE,
+        ).first()
+        if not row or not isinstance(row.valor, dict):
+            return default
+        raw = row.valor.get(key)
+        if raw is None:
+            return default
+        v = str(raw).strip().upper()
+        if v in ("A4", "TICKET"):
+            return v
+    except (TypeError, ValueError):
+        pass
+    return default
+
 
 def _s_money(d: Decimal) -> str:
     return str(d.quantize(Decimal("0.01")))
@@ -110,14 +148,15 @@ def construir_payload(documento: DocumentoVenta) -> dict[str, Any]:
     ):
         raise ValueError("Nubefact: solo se admite tipo FACTURA o BOLETA.")
 
+    empresa_pk = getattr(documento, "empresa_id", None)
     if documento.tipo == TipoDocumentoVenta.FACTURA:
         tipo_comprobante = "1"
         serie = (documento.serie or "").strip() or "FFF1"
-        formato_pdf = "A4"
+        formato_pdf = obtener_formato_pdf_nubefact(empresa_pk, documento.tipo)
     else:
         tipo_comprobante = "2"
         serie = (documento.serie or "").strip() or "BBB1"
-        formato_pdf = "TICKET"
+        formato_pdf = obtener_formato_pdf_nubefact(empresa_pk, documento.tipo)
 
     numero = (documento.numero or "").strip() or str(documento.pk)
 

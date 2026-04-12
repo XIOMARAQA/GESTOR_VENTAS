@@ -2,6 +2,7 @@ from django.http import HttpResponse
 from django.utils import timezone
 
 from rest_framework import mixins, viewsets
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -60,6 +61,7 @@ def _resolve_empresa_id_for_core_upload(request):
 class EmpresaViewSet(viewsets.ModelViewSet):
     queryset = Empresa.objects.all()
     serializer_class = EmpresaSerializer
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
     search_fields = ["razon_social", "ruc"]
 
     def get_queryset(self):
@@ -148,6 +150,15 @@ class SucursalViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Sucursal.objects.select_related("empresa")
     serializer_class = SucursalSerializer
     search_fields = ["nombre"]
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        if user.is_authenticated and user.is_superuser:
+            raw = self.request.data.get("empresa")
+            if raw is not None and str(raw).strip() != "":
+                serializer.save(empresa_id=int(raw))
+                return
+        super().perform_create(serializer)
 
 
 class ClienteViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):

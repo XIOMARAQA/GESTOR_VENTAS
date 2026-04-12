@@ -453,3 +453,45 @@ class LoginSerializer(serializers.Serializer):
         return attrs
 
 
+
+
+
+class CambiarPasswordSerializer(serializers.Serializer):
+
+    """Usuario autenticado: contraseña actual + nueva (misma política que el registro)."""
+
+
+
+    password_actual = serializers.CharField(write_only=True)
+
+    password = serializers.CharField(write_only=True, min_length=8)
+
+    password_confirm = serializers.CharField(write_only=True, min_length=8)
+
+
+
+    def validate_password(self, value):
+
+        if not password_cumple_politica(value):
+
+            raise serializers.ValidationError(PASSWORD_RULES_MSG)
+
+        validate_password(value)
+
+        return value
+
+
+
+    def validate(self, attrs):
+
+        if attrs["password"] != attrs["password_confirm"]:
+
+            raise serializers.ValidationError(
+
+                {"password_confirm": "Las contraseñas no coinciden."}
+
+            )
+
+        return attrs
+
+

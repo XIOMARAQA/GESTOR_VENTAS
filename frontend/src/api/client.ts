@@ -16,5 +16,11 @@ api.interceptors.request.use((config) => {
   if (t) {
     config.headers.Authorization = `Token ${t}`
   }
+  if (config.data instanceof FormData) {
+    const h = config.headers
+    if (h && typeof (h as { delete?: (k: string) => void }).delete === 'function') {
+      ;(h as { delete: (k: string) => void }).delete('Content-Type')
+    }
+  }
   return config
 })

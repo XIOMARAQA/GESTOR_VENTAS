@@ -113,6 +113,7 @@ class AlmacenSerializer(serializers.ModelSerializer):
             "sucursal",
             "sucursal_nombre",
             "nombre",
+            "direccion",
             "es_principal",
             "activo",
             "creado_en",
@@ -122,12 +123,21 @@ class AlmacenSerializer(serializers.ModelSerializer):
 
 
 class StockSerializer(serializers.ModelSerializer):
+    item_codigo = serializers.CharField(source="item.codigo", read_only=True)
     item_nombre = serializers.CharField(source="item.nombre", read_only=True)
     almacen_nombre = serializers.CharField(source="almacen.nombre", read_only=True)
 
     class Meta:
         model = Stock
-        fields = ["item", "item_nombre", "almacen", "almacen_nombre", "cantidad"]
+        fields = [
+            "id",
+            "item",
+            "item_codigo",
+            "item_nombre",
+            "almacen",
+            "almacen_nombre",
+            "cantidad",
+        ]
 
 
 class MovimientoStockLineaSerializer(serializers.ModelSerializer):
@@ -138,11 +148,56 @@ class MovimientoStockLineaSerializer(serializers.ModelSerializer):
 
 class MovimientoStockSerializer(serializers.ModelSerializer):
     lineas = MovimientoStockLineaSerializer(many=True, read_only=True)
+    almacen_nombre = serializers.SerializerMethodField()
+    tipo_comprobante = serializers.SerializerMethodField()
 
     class Meta:
         model = MovimientoStock
-        fields = "__all__"
+        fields = [
+            "id",
+            "empresa",
+            "almacen",
+            "tipo",
+            "referencia_tipo",
+            "referencia_id",
+            "glosa",
+            "usuario",
+            "creado_en",
+            "actualizado_en",
+            "lineas",
+            "almacen_nombre",
+            "tipo_comprobante",
+        ]
         read_only_fields = ["id", "creado_en", "actualizado_en"]
+
+    def get_almacen_nombre(self, obj):
+        if getattr(obj, "almacen", None) is not None:
+            return (obj.almacen.nombre or "").strip()
+        return ""
+
+    def get_tipo_comprobante(self, obj):
+        rt = (obj.referencia_tipo or "").strip()
+        rid = obj.referencia_id
+        if not rid:
+            return ""
+        ctx = self.context
+        if rt == "DOCUMENTO_VENTA":
+            m = ctx.get("tipo_comp_venta")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.ventas.models import DocumentoVenta
+
+            doc = DocumentoVenta.objects.filter(pk=rid).only("tipo").first()
+            return doc.get_tipo_display() if doc else ""
+        if rt == "DOCUMENTO_COMPRA":
+            m = ctx.get("tipo_comp_compra")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.compras.models import DocumentoCompra
+
+            doc = DocumentoCompra.objects.filter(pk=rid).only("tipo").first()
+            return doc.get_tipo_display() if doc else ""
+        return ""
 
 
 class ListaPrecioSerializer(serializers.ModelSerializer):
