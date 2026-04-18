@@ -101,6 +101,9 @@ class ProveedorSerializer(serializers.ModelSerializer):
             "empresa",
             "razon_social",
             "documento",
+            "email",
+            "direccion",
+            "telefono",
             "activo",
         ]
         read_only_fields = ["id", "empresa"]

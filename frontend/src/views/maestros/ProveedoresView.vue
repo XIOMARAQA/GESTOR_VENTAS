@@ -11,17 +11,21 @@ type Row = {
   id: number
   razon_social?: string
   documento?: string
+  email?: string
+  telefono?: string
+  direccion?: string
   activo?: boolean
 }
 
-const ctx = useAppContextStore()
-const { empresaId, isSuperuser } = storeToRefs(ctx)
+const { empresaId, isSuperuser } = storeToRefs(useAppContextStore())
 
 const rows = ref<Row[]>([])
 const loading = ref(true)
 const err = ref('')
 const filtroRazon = ref('')
 const filtroDocumento = ref('')
+const filtroEmail = ref('')
+const filtroTelefono = ref('')
 const filtroTipo = ref<'all' | 'dni' | 'ruc' | 'otro'>('all')
 
 const importInput = ref<HTMLInputElement | null>(null)
@@ -38,6 +42,9 @@ const consultDniLoading = ref(false)
 const form = ref({
   documento: '',
   razon_social: '',
+  email: '',
+  telefono: '',
+  direccion: '',
   activo: true,
 })
 
@@ -53,6 +60,8 @@ const puedeConsultarDni = computed(() => /^\d{8}$/.test(docDigits.value))
 const filtradas = computed(() => {
   const rs = filtroRazon.value.trim().toLowerCase()
   const doc = filtroDocumento.value.trim().toLowerCase()
+  const em = filtroEmail.value.trim().toLowerCase()
+  const tel = filtroTelefono.value.trim().toLowerCase()
   const tipo = filtroTipo.value
 
   return rows.value.filter((r) => {
@@ -63,6 +72,8 @@ const filtradas = computed(() => {
 
     if (rs && !(r.razon_social || '').toLowerCase().includes(rs)) return false
     if (doc && !(r.documento || '').toLowerCase().includes(doc)) return false
+    if (em && !(r.email || '').toLowerCase().includes(em)) return false
+    if (tel && !(r.telefono || '').toLowerCase().includes(tel)) return false
     return true
   })
 })
@@ -174,6 +185,9 @@ function openNuevo() {
   form.value = {
     documento: '',
     razon_social: '',
+    email: '',
+    telefono: '',
+    direccion: '',
     activo: true,
   }
   showModal.value = true
@@ -187,6 +201,9 @@ async function openEdit(r: Row) {
     form.value = {
       documento: (data.documento ?? '').toString(),
       razon_social: (data.razon_social ?? '').toString(),
+      email: (data.email ?? '').toString(),
+      telefono: (data.telefono ?? '').toString(),
+      direccion: (data.direccion ?? '').toString(),
       activo: data.activo !== false,
     }
     showModal.value = true
@@ -212,12 +229,18 @@ async function consultarRucPadron() {
       ok?: boolean
       nombre_padron?: string
       razon_social?: string
+      direccion?: string
       detail?: string
     }>('/core/consultar-ruc/', { params: { numero: n } })
     if (data.ok) {
       const pad = (data.nombre_padron || data.razon_social || '').trim()
-      if (pad) form.value.razon_social = pad
-      else formErr.value = 'SUNAT no devolvió nombre para este RUC.'
+      const dirSunat = typeof data.direccion === 'string' ? data.direccion.trim() : ''
+      if (pad) {
+        form.value.razon_social = pad
+        if (dirSunat) {
+          form.value.direccion = dirSunat.slice(0, 2000)
+        }
+      } else formErr.value = 'SUNAT no devolvió nombre para este RUC.'
     } else {
       formErr.value =
         typeof data.detail === 'string' && data.detail.trim()
@@ -286,6 +309,9 @@ async function guardar() {
     const body: Record<string, unknown> = {
       razon_social: f.razon_social.trim().slice(0, 255),
       documento: doc ? doc.slice(0, 20) : '',
+      email: f.email.trim().slice(0, 254),
+      telefono: f.telefono.trim().slice(0, 40),
+      direccion: f.direccion.trim(),
       activo: f.activo,
     }
     if (editingId.value == null && isSuperuser.value && empresaId.value) {
@@ -342,9 +368,10 @@ onMounted(load)
         <h1 class="title">Proveedores</h1>
         <p class="lead">
           Registre a quién compra: <strong>razón social o nombre</strong> es obligatorio; el <strong>documento</strong> es
-          opcional pero ayuda a identificar al proveedor. En el formulario puede usar
+          opcional pero ayuda a identificar al proveedor. Puede registrar <strong>correo</strong>, <strong>teléfono</strong> y
+          <strong>dirección</strong> como en clientes. En el formulario puede usar
           <strong>Consultar SUNAT</strong> (RUC de 11 dígitos) o <strong>Consultar RENIEC</strong> (DNI de 8 dígitos) para
-          sugerir el nombre. No se guardan correo ni teléfono en esta ficha.
+          sugerir el nombre; con SUNAT también se puede sugerir el domicilio fiscal.
         </p>
       </div>
       <div class="head-actions">
@@ -412,6 +439,14 @@ onMounted(load)
         <span class="flab">Razón social</span>
         <input v-model="filtroRazon" type="text" class="inp" placeholder="Filtrar…" />
       </label>
+      <label class="f">
+        <span class="flab">Correo</span>
+        <input v-model="filtroEmail" type="text" class="inp" placeholder="Filtrar…" />
+      </label>
+      <label class="f">
+        <span class="flab">Teléfono</span>
+        <input v-model="filtroTelefono" type="text" class="inp" placeholder="Filtrar…" />
+      </label>
       <p class="total">Total visibles: {{ filtradas.length }} de {{ rows.length }}</p>
     </div>
 
@@ -423,6 +458,9 @@ onMounted(load)
             <tr>
               <th>Documento</th>
               <th>Razón social</th>
+              <th>Dirección</th>
+              <th>Teléfono</th>
+              <th>Correo</th>
               <th>Activo</th>
               <th class="th-act">Acciones</th>
             </tr>
@@ -433,6 +471,14 @@ onMounted(load)
                 <code class="code">{{ r.documento?.trim() || '—' }}</code>
               </td>
               <td class="td-name">{{ r.razon_social?.trim() || '—' }}</td>
+              <td
+                class="td-dir"
+                :title="(r.direccion || '').trim() || undefined"
+              >
+                {{ r.direccion?.trim() || '—' }}
+              </td>
+              <td>{{ r.telefono?.trim() || '—' }}</td>
+              <td>{{ r.email?.trim() || '—' }}</td>
               <td>
                 <span class="pill" :class="r.activo !== false ? 'pill--ok' : 'pill--off'">{{
                   r.activo !== false ? 'Sí' : 'No'
@@ -525,6 +571,18 @@ onMounted(load)
           <label class="field">
             <span class="lab">Razón social o nombre</span>
             <input v-model="form.razon_social" class="inp" maxlength="255" />
+          </label>
+          <label class="field">
+            <span class="lab">Correo</span>
+            <input v-model="form.email" class="inp" type="email" maxlength="254" />
+          </label>
+          <label class="field">
+            <span class="lab">Teléfono</span>
+            <input v-model="form.telefono" class="inp" maxlength="40" />
+          </label>
+          <label class="field">
+            <span class="lab">Dirección</span>
+            <textarea v-model="form.direccion" class="inp inp--area" rows="2" />
           </label>
           <label class="field row-check">
             <input v-model="form.activo" type="checkbox" />
@@ -713,6 +771,11 @@ onMounted(load)
 .inp--select {
   min-width: 11rem;
 }
+.inp--area {
+  resize: vertical;
+  min-height: 2.75rem;
+  font-family: inherit;
+}
 .total {
   margin: 0;
   font-size: 0.8rem;
@@ -814,6 +877,14 @@ onMounted(load)
 }
 .td-name {
   font-weight: 600;
+}
+.td-dir {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #475569;
+  font-weight: 500;
 }
 .pill {
   font-size: 0.72rem;

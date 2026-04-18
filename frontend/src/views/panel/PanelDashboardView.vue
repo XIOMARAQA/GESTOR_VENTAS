@@ -283,7 +283,9 @@ const maxVendedor = computed(() => {
 async function load() {
   await ctx.ensureEmpresa()
   if (!ctx.empresaId) {
-    error.value = 'Crea una empresa en el admin o API para ver el panel.'
+    error.value = ctx.isSuperuser
+      ? 'Como superadministrador, elija un cliente en Plataforma → Empresas activas (pulse la tarjeta) para entrar al panel de esa empresa con control total.'
+      : 'Crea una empresa en el admin o API para ver el panel.'
     return
   }
   loading.value = true

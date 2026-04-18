@@ -2,7 +2,8 @@
 Aislamiento por empresa en la API (SaaS multi-tenant).
 
 - Usuario con ``perfil_gestor``: solo datos de su ``empresa``.
-- ``is_superuser``: sin filtro (visión global: ventas del producto, soporte, etc.).
+- ``is_superuser``: en listados, sin filtro por empresa (visión global). En altas/imports
+  que exijan ``empresa`` en el cuerpo o query, debe indicar el tenant explícitamente.
 - Sin autenticar (p. ej. ``API_REQUIRE_AUTH=false`` en desarrollo): sin filtro, mismo
   comportamiento laxo que antes.
 """

@@ -95,6 +95,13 @@ class DocumentoCompra(TimeStampedModel):
         default=False,
         help_text="Si es True, el precio unitario capturado al crear el documento incluía IGV.",
     )
+    afecta_stock = models.BooleanField(
+        default=True,
+        help_text=(
+            "Si es False, al registrar (emitir) el documento no genera movimientos de inventario "
+            "(no aparece en kardex). Útil para compras contables sin mercadería."
+        ),
+    )
     condicion_pago = models.CharField(
         max_length=10,
         choices=CondicionPagoDocumento.choices,

@@ -7,11 +7,16 @@ from apps.compras.models import DocumentoCompra, TipoDocumentoCompra
 from apps.inventario.models import Almacen, MovimientoStock, TipoMovimientoStock
 from apps.inventario.services.stock_service import StockInsuficienteError, StockService
 from apps.tesoreria.models import CronogramaPago, EstadoCronogramaPago
+from apps.tesoreria.services.proveedor_pago_service import ProveedorPagoService
 from apps.ventas.models import CondicionPagoDocumento, EstadoDocumento
 
 
 class DocumentoCompraService:
-    """Al emitir: factura/boleta/nota de compra ingresan stock; N.C. proveedor sale; resumen/guía no mueven kardex."""
+    """
+    Al emitir: factura/boleta/nota de compra ingresan stock; N.C. proveedor sale; resumen/guía no mueven kardex.
+    Si `documento.afecta_stock` es False, no se llama a StockService (no hay movimiento ni kardex), salvo tipos
+    que ya no mueven stock por naturaleza (resumen/guía).
+    """
 
     _TIPOS_INGRESO_STOCK = frozenset(
         {
@@ -106,28 +111,30 @@ class DocumentoCompraService:
         ]
         glosa_ing = f"Ingreso por {documento.get_tipo_display()}"
         if documento.tipo in cls._TIPOS_INGRESO_STOCK:
-            StockService.aplicar_ingreso(
-                empresa_id=documento.empresa_id,
-                almacen=almacen,
-                lineas=lineas,
-                referencia_tipo="DOCUMENTO_COMPRA",
-                referencia_id=documento.id,
-                usuario=usuario,
-                glosa=glosa_ing,
-            )
-        elif documento.tipo == TipoDocumentoCompra.NOTA_CREDITO_PROVEEDOR:
-            try:
-                StockService.aplicar_salida(
+            if documento.afecta_stock:
+                StockService.aplicar_ingreso(
                     empresa_id=documento.empresa_id,
                     almacen=almacen,
                     lineas=lineas,
                     referencia_tipo="DOCUMENTO_COMPRA",
                     referencia_id=documento.id,
                     usuario=usuario,
-                    glosa="Salida por nota de crédito proveedor (devolución)",
+                    glosa=glosa_ing,
                 )
-            except StockInsuficienteError:
-                raise
+        elif documento.tipo == TipoDocumentoCompra.NOTA_CREDITO_PROVEEDOR:
+            if documento.afecta_stock:
+                try:
+                    StockService.aplicar_salida(
+                        empresa_id=documento.empresa_id,
+                        almacen=almacen,
+                        lineas=lineas,
+                        referencia_tipo="DOCUMENTO_COMPRA",
+                        referencia_id=documento.id,
+                        usuario=usuario,
+                        glosa="Salida por nota de crédito proveedor (devolución)",
+                    )
+                except StockInsuficienteError:
+                    raise
         elif documento.tipo in cls._TIPOS_SIN_MOVIMIENTO_STOCK:
             pass
         else:
@@ -204,5 +211,65 @@ class DocumentoCompraService:
 
         CronogramaPago.objects.filter(documento_compra=documento).delete()
         documento.estado = EstadoDocumento.ANULADO
+        documento.save(update_fields=["estado", "actualizado_en"])
+        return documento
+
+    @classmethod
+    @transaction.atomic
+    def reabrir_borrador_para_edicion(
+        cls,
+        documento: DocumentoCompra,
+        *,
+        usuario=None,
+    ) -> DocumentoCompra:
+        """
+        Documento EMITIDO → BORRADOR para permitir edición: revierte movimiento de stock (si existía),
+        revierte pagos a proveedor asociados y elimina cronogramas de este documento.
+        """
+        if documento.estado != EstadoDocumento.EMITIDO:
+            raise ValueError("Solo se puede reabrir un documento en estado registrado (emitido).")
+
+        mov = (
+            MovimientoStock.objects.filter(
+                referencia_tipo="DOCUMENTO_COMPRA",
+                referencia_id=documento.id,
+            )
+            .select_related("almacen")
+            .prefetch_related("lineas__item")
+            .order_by("-id")
+            .first()
+        )
+        if mov is not None:
+            lineas_tuples = [
+                (ln.item, Decimal(ln.cantidad))
+                for ln in mov.lineas.select_related("item").all()
+            ]
+            if mov.tipo == TipoMovimientoStock.INGRESO:
+                StockService.aplicar_salida(
+                    empresa_id=documento.empresa_id,
+                    almacen=mov.almacen,
+                    lineas=lineas_tuples,
+                    referencia_tipo="REAPERTURA_EDICION_DOCUMENTO_COMPRA",
+                    referencia_id=documento.id,
+                    usuario=usuario,
+                    glosa=f"Reapertura edición {documento.get_tipo_display()}",
+                )
+            elif mov.tipo == TipoMovimientoStock.SALIDA:
+                StockService.aplicar_ingreso(
+                    empresa_id=documento.empresa_id,
+                    almacen=mov.almacen,
+                    lineas=lineas_tuples,
+                    referencia_tipo="REAPERTURA_EDICION_DOCUMENTO_COMPRA",
+                    referencia_id=documento.id,
+                    usuario=usuario,
+                    glosa="Reapertura edición nota de crédito proveedor",
+                )
+
+        for cr in list(CronogramaPago.objects.filter(documento_compra=documento)):
+            if cr.estado == EstadoCronogramaPago.PAGADO or cr.pagos_registro.exists():
+                ProveedorPagoService.revertir_obligacion_pagada(cr)
+        CronogramaPago.objects.filter(documento_compra=documento).delete()
+
+        documento.estado = EstadoDocumento.BORRADOR
         documento.save(update_fields=["estado", "actualizado_en"])
         return documento

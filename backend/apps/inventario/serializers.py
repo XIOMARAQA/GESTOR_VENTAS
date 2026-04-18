@@ -150,6 +150,9 @@ class MovimientoStockSerializer(serializers.ModelSerializer):
     lineas = MovimientoStockLineaSerializer(many=True, read_only=True)
     almacen_nombre = serializers.SerializerMethodField()
     tipo_comprobante = serializers.SerializerMethodField()
+    producto_nombre = serializers.SerializerMethodField()
+    comprobante_serie = serializers.SerializerMethodField()
+    comprobante_numero = serializers.SerializerMethodField()
 
     class Meta:
         model = MovimientoStock
@@ -166,7 +169,10 @@ class MovimientoStockSerializer(serializers.ModelSerializer):
             "actualizado_en",
             "lineas",
             "almacen_nombre",
+            "producto_nombre",
             "tipo_comprobante",
+            "comprobante_serie",
+            "comprobante_numero",
         ]
         read_only_fields = ["id", "creado_en", "actualizado_en"]
 
@@ -174,6 +180,22 @@ class MovimientoStockSerializer(serializers.ModelSerializer):
         if getattr(obj, "almacen", None) is not None:
             return (obj.almacen.nombre or "").strip()
         return ""
+
+    def get_producto_nombre(self, obj):
+        nombres = []
+        seen = set()
+        for ln in obj.lineas.all():
+            nom = ""
+            if getattr(ln, "item", None) is not None:
+                nom = (ln.item.nombre or "").strip()
+            if nom and nom not in seen:
+                seen.add(nom)
+                nombres.append(nom)
+        if not nombres:
+            return ""
+        if len(nombres) <= 2:
+            return ", ".join(nombres)
+        return ", ".join(nombres[:2]) + f" (+{len(nombres) - 2})"
 
     def get_tipo_comprobante(self, obj):
         rt = (obj.referencia_tipo or "").strip()
@@ -197,6 +219,54 @@ class MovimientoStockSerializer(serializers.ModelSerializer):
 
             doc = DocumentoCompra.objects.filter(pk=rid).only("tipo").first()
             return doc.get_tipo_display() if doc else ""
+        return ""
+
+    def get_comprobante_serie(self, obj):
+        rt = (obj.referencia_tipo or "").strip()
+        rid = obj.referencia_id
+        if not rid:
+            return ""
+        ctx = self.context
+        if rt == "DOCUMENTO_VENTA":
+            m = ctx.get("serie_venta")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.ventas.models import DocumentoVenta
+
+            doc = DocumentoVenta.objects.filter(pk=rid).only("serie").first()
+            return (doc.serie or "").strip() if doc else ""
+        if rt == "DOCUMENTO_COMPRA":
+            m = ctx.get("serie_compra")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.compras.models import DocumentoCompra
+
+            doc = DocumentoCompra.objects.filter(pk=rid).only("serie").first()
+            return (doc.serie or "").strip() if doc else ""
+        return ""
+
+    def get_comprobante_numero(self, obj):
+        rt = (obj.referencia_tipo or "").strip()
+        rid = obj.referencia_id
+        if not rid:
+            return ""
+        ctx = self.context
+        if rt == "DOCUMENTO_VENTA":
+            m = ctx.get("numero_venta")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.ventas.models import DocumentoVenta
+
+            doc = DocumentoVenta.objects.filter(pk=rid).only("numero").first()
+            return (doc.numero or "").strip() if doc else ""
+        if rt == "DOCUMENTO_COMPRA":
+            m = ctx.get("numero_compra")
+            if isinstance(m, dict) and rid in m:
+                return m[rid]
+            from apps.compras.models import DocumentoCompra
+
+            doc = DocumentoCompra.objects.filter(pk=rid).only("numero").first()
+            return (doc.numero or "").strip() if doc else ""
         return ""
 
 

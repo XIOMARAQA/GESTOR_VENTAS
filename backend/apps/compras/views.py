@@ -124,6 +124,7 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
             fecha_vencimiento=data.get("fecha_vencimiento"),
             es_electronica=False,
             precio_incluye_igv=incluye,
+            afecta_stock=bool(data.get("afecta_stock", True)),
         )
 
         for ln in lineas_in:
@@ -217,6 +218,7 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
         doc.condicion_pago = data["condicion_pago"]
         doc.fecha_vencimiento = data.get("fecha_vencimiento")
         doc.precio_incluye_igv = incluye
+        doc.afecta_stock = bool(data.get("afecta_stock", True))
         doc.save()
 
         DocumentoCompraLinea.objects.filter(documento=doc).delete()
@@ -250,6 +252,22 @@ class DocumentoCompraViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
         doc = self.get_object()
         try:
             DocumentoCompraService.anular(
+                doc,
+                usuario=request.user if request.user.is_authenticated else None,
+            )
+        except ValueError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except StockInsuficienteError as e:
+            return Response({"detail": str(e)}, status=status.HTTP_409_CONFLICT)
+        doc.refresh_from_db()
+        return Response(DocumentoCompraSerializer(doc).data)
+
+    @action(detail=True, methods=["post"], url_path="reabrir-borrador")
+    @transaction.atomic
+    def reabrir_borrador(self, request, pk=None):
+        doc = self.get_object()
+        try:
+            DocumentoCompraService.reabrir_borrador_para_edicion(
                 doc,
                 usuario=request.user if request.user.is_authenticated else None,
             )

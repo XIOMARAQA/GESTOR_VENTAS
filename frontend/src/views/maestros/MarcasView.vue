@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
 
 import { api } from '@/api/client'
+import { useAppContextStore } from '@/stores/appContext'
 import { listLoadErrorMessage } from '@/utils/listLoadErrorMessage'
+
+const { empresaId, isSuperuser } = storeToRefs(useAppContextStore())
 
 type Row = {
   id: number
@@ -15,6 +19,12 @@ const rows = ref<Row[]>([])
 const loading = ref(true)
 const err = ref('')
 const filtroNombre = ref('')
+
+const importInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importMsg = ref('')
+const importErr = ref('')
+const importBloqueado = computed(() => isSuperuser.value && !empresaId.value)
 
 const showModal = ref(false)
 const saving = ref(false)
@@ -41,6 +51,71 @@ async function load() {
     rows.value = []
   } finally {
     loading.value = false
+  }
+}
+
+async function descargarPlantilla() {
+  err.value = ''
+  try {
+    const { data } = await api.get('/inventario/marcas/plantilla-excel/', { responseType: 'blob' })
+    const blob = new Blob([data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'plantilla_marcas.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    err.value = 'No se pudo descargar la plantilla.'
+  }
+}
+
+function abrirSelectorImport() {
+  importMsg.value = ''
+  importErr.value = ''
+  if (importBloqueado.value) return
+  importInput.value?.click()
+}
+
+async function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || importBloqueado.value) return
+
+  const fd = new FormData()
+  fd.append('file', file)
+  if (isSuperuser.value && empresaId.value) {
+    fd.append('empresa', empresaId.value)
+  }
+
+  importing.value = true
+  importMsg.value = ''
+  importErr.value = ''
+  err.value = ''
+  try {
+    const { data } = await api.post<{
+      creados: number
+      actualizados: number
+      errores: { fila: number; mensaje: string }[]
+    }>('/inventario/marcas/importar-excel/', fd)
+
+    importMsg.value = `Listo: ${data.creados} creadas, ${data.actualizados} actualizadas.`
+    if (data.errores?.length) {
+      importErr.value = data.errores.map((e) => `Fila ${e.fila}: ${e.mensaje}`).join('\n')
+    }
+    await load()
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.data) {
+      const d = e.response.data
+      importErr.value = d instanceof Blob ? 'Error al importar (revise el archivo).' : drfMsg(d)
+    } else {
+      importErr.value = 'Error de conexión al importar.'
+    }
+  } finally {
+    importing.value = false
   }
 }
 
@@ -150,12 +225,40 @@ onMounted(load)
       </div>
       <div class="head-actions">
         <button type="button" class="btn-add" @click="openNuevo">+ Agregar marca</button>
+        <button type="button" class="btn-tpl" :disabled="loading" @click="descargarPlantilla">
+          Descargar plantilla
+        </button>
+        <button
+          type="button"
+          class="btn-imp"
+          :disabled="loading || importing || importBloqueado"
+          :title="
+            importBloqueado
+              ? 'Seleccione una empresa en la barra superior (modo plataforma)'
+              : 'Subir Excel .xlsx completado'
+          "
+          @click="abrirSelectorImport"
+        >
+          {{ importing ? 'Importando…' : 'Importar Excel' }}
+        </button>
+        <input
+          ref="importInput"
+          type="file"
+          class="sr-only"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          @change="onImportFile"
+        />
         <button type="button" class="btn-ref" :disabled="loading" @click="load">
           {{ loading ? '…' : 'Actualizar' }}
         </button>
       </div>
     </header>
 
+    <p v-if="importBloqueado" class="warn">
+      Modo administrador global sin empresa en contexto: elija una empresa en la barra superior para importar marcas.
+    </p>
+    <p v-if="importMsg" class="ok-msg">{{ importMsg }}</p>
+    <p v-if="importErr" class="import-err">{{ importErr }}</p>
     <p v-if="err" class="err">{{ err }}</p>
 
     <div class="filters">
@@ -311,6 +414,70 @@ onMounted(load)
 .btn-add:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.btn-tpl {
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #0369a1;
+  background: #f0f9ff;
+  color: #0369a1;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.btn-tpl:hover:not(:disabled) {
+  background: #e0f2fe;
+}
+.btn-imp {
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #0e7490;
+  background: #0e7490;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-imp:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.btn-imp:disabled,
+.btn-tpl:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.warn {
+  font-size: 0.85rem;
+  color: #9a3412;
+  background: #ffedd5;
+  border: 1px solid #fdba74;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  margin: 0 0 0.75rem;
+}
+.ok-msg {
+  font-size: 0.85rem;
+  color: #166534;
+  margin: 0 0 0.35rem;
+}
+.import-err {
+  font-size: 0.8rem;
+  color: #b91c1c;
+  white-space: pre-wrap;
+  margin: 0 0 0.75rem;
+  line-height: 1.4;
 }
 .btn-ref {
   padding: 0.45rem 0.85rem;

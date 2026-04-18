@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import axios from 'axios'
+import ExcelJS from 'exceljs'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -37,6 +38,16 @@ function isoDate(d: Date): string {
 }
 
 const route = useRoute()
+const ctx = useAppContextStore()
+
+function detailFromAxios(e: unknown, fallback: string): string {
+  if (axios.isAxiosError(e) && e.response?.data) {
+    const d = e.response.data as Record<string, unknown>
+    if (typeof d.detail === 'string') return d.detail
+    if (Array.isArray(d.detail)) return d.detail.map(String).join(' ')
+  }
+  return fallback
+}
 
 const loading = ref(false)
 const errorMsg = ref('')
@@ -141,6 +152,488 @@ function refresh() {
   load()
 }
 
+const TIPOS_COMPRA_IMPORT = new Set<string>([
+  'FACTURA_COMPRA',
+  'BOLETA_COMPRA',
+  'NOTA_COMPRA',
+  'RESUMEN_COMPRAS',
+  'GUIA_REMISION_COMPRA',
+  'NOTA_CREDITO_PROVEEDOR',
+])
+
+const PLANTILLA_COMPRAS_HEADERS = [
+  'grupo_doc',
+  'ruc_proveedor',
+  'tipo',
+  'serie',
+  'numero',
+  'fecha',
+  'condicion_pago',
+  'fecha_vencimiento',
+  'precios_con_igv',
+  'codigo_item',
+  'cantidad',
+  'precio_unit',
+  'afecta_stock',
+] as const
+
+type CompraImportLine = {
+  rowExcel: number
+  grupo: string
+  ruc: string
+  tipo: string
+  serie: string
+  numero: string
+  fecha: string
+  condicion: string
+  fechaVenc: string
+  precioIncluyeIgv: boolean
+  codigoItem: string
+  cantidad: string
+  precioUnit: string
+  afectaStock: boolean
+}
+
+const importComprasInputRef = ref<HTMLInputElement | null>(null)
+const importComprasBusy = ref(false)
+const bulkImportMsg = ref('')
+const bulkImportOk = ref(true)
+
+const canUseComprasExcel = computed(() => {
+  if (!ctx.isSuperuser) return true
+  return !!(ctx.empresaId && String(ctx.empresaId).trim())
+})
+
+function cellToString(v: unknown): string {
+  if (v == null || v === '') return ''
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return Number.isInteger(v) ? String(v) : String(v)
+  }
+  return String(v).trim()
+}
+
+function cellToFechaIso(v: unknown): string | null {
+  if (v == null || v === '') return null
+  if (v instanceof Date) {
+    if (Number.isNaN(v.getTime())) return null
+    return isoDate(v)
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const utc = Math.round((v - 25569) * 86400 * 1000)
+    const d = new Date(utc)
+    if (!Number.isNaN(d.getTime())) return isoDate(d)
+  }
+  const s = String(v).trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (m?.[1] && m[2] && m[3]) {
+    const dd = m[1].padStart(2, '0')
+    const mm = m[2].padStart(2, '0')
+    return `${m[3]}-${mm}-${dd}`
+  }
+  return null
+}
+
+function ynToBool(s: string): boolean {
+  const u = s.trim().toUpperCase()
+  return u === 'S' || u === 'SI' || u === 'Y' || u === '1' || u === 'TRUE'
+}
+
+function proveedorIdPorRuc(ruc: string, catalog: ProvCat[]): number | null {
+  const d = ruc.replace(/\D/g, '')
+  if (!d) return null
+  const p = catalog.find((x) => (x.documento || '').replace(/\D/g, '') === d)
+  return typeof p?.id === 'number' ? p.id : null
+}
+
+function itemIdPorCodigo(cod: string, catalog: ItemCat[]): number | null {
+  const c = cod.trim().toUpperCase()
+  if (!c) return null
+  const it = catalog.find((x) => (x.codigo || '').trim().toUpperCase() === c)
+  return typeof it?.id === 'number' ? it.id : null
+}
+
+function cabKeyLine(l: CompraImportLine): string {
+  return [
+    l.ruc.toUpperCase(),
+    l.tipo.toUpperCase(),
+    l.serie.trim(),
+    l.numero.trim(),
+    l.fecha,
+    l.condicion.toUpperCase(),
+    l.fechaVenc,
+    l.precioIncluyeIgv ? '1' : '0',
+    l.afectaStock ? '1' : '0',
+  ].join('|')
+}
+
+async function descargarPlantillaComprasExcel() {
+  const wb = new ExcelJS.Workbook()
+  const ws = wb.addWorksheet('Compras', { views: [{ state: 'frozen', ySplit: 1 }] })
+  const headers = [...PLANTILLA_COMPRAS_HEADERS]
+  const hdr = ws.addRow(headers)
+  hdr.height = 30
+  const headBorder = {
+    top: { style: 'thin' as const, color: { argb: 'FF0d5c56' } },
+    left: { style: 'thin' as const, color: { argb: 'FF0d5c56' } },
+    bottom: { style: 'thin' as const, color: { argb: 'FF0d5c56' } },
+    right: { style: 'thin' as const, color: { argb: 'FF0d5c56' } },
+  }
+  hdr.eachCell((cell) => {
+    cell.font = { bold: true, size: 11, color: { argb: 'FFFFFFFF' } }
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF0f766e' },
+    }
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
+    cell.border = headBorder
+  })
+
+  const hair = {
+    top: { style: 'hair' as const, color: { argb: 'FFE2E8F0' } },
+    left: { style: 'hair' as const, color: { argb: 'FFE2E8F0' } },
+    bottom: { style: 'hair' as const, color: { argb: 'FFE2E8F0' } },
+    right: { style: 'hair' as const, color: { argb: 'FFE2E8F0' } },
+  }
+
+  const ejemplo1 = [
+    1,
+    '20123456789',
+    'FACTURA_COMPRA',
+    'F002',
+    '1',
+    new Date(2026, 3, 1),
+    'CONTADO',
+    '',
+    'N',
+    'PROD-01',
+    2,
+    10,
+    'S',
+  ]
+  const ejemplo2 = [
+    1,
+    '20123456789',
+    'FACTURA_COMPRA',
+    'F002',
+    '1',
+    new Date(2026, 3, 1),
+    'CONTADO',
+    '',
+    'N',
+    'PROD-02',
+    1,
+    15.5,
+    'S',
+  ]
+  const ejemplo3 = [
+    2,
+    '20123456789',
+    'FACTURA_COMPRA',
+    'F002',
+    '2',
+    new Date(2026, 3, 2),
+    'CREDITO',
+    new Date(2026, 4, 2),
+    'S',
+    'PROD-01',
+    3,
+    20,
+    'S',
+  ]
+  ws.addRow(ejemplo1)
+  ws.addRow(ejemplo2)
+  ws.addRow(ejemplo3)
+
+  const colWidths = [11, 16, 18, 10, 10, 12, 14, 14, 14, 14, 10, 12, 12]
+  colWidths.forEach((w, i) => {
+    ws.getColumn(i + 1).width = w
+  })
+
+  const nCols = headers.length
+  for (let r = 2; r <= 4; r++) {
+    for (let c = 1; c <= nCols; c++) {
+      const cell = ws.getCell(r, c)
+      cell.border = hair
+      if (c === 1) {
+        cell.numFmt = '0'
+        cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      } else if (c === 2) {
+        cell.numFmt = '@'
+        cell.alignment = { horizontal: 'left', vertical: 'middle' }
+      } else if (c === 6 || c === 8) {
+        if (cell.value instanceof Date) cell.numFmt = 'yyyy-mm-dd'
+        cell.alignment = { horizontal: 'center', vertical: 'middle' }
+      } else if (c === 11 || c === 12) {
+        if (typeof cell.value === 'number') cell.numFmt = '#,##0.####'
+        cell.alignment = { horizontal: 'right', vertical: 'middle' }
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' }
+      }
+    }
+  }
+
+  const inst = wb.addWorksheet('Instrucciones')
+  const lines = [
+    'Uso de la plantilla',
+    '',
+    '• No cambie los nombres de la fila 1 en la hoja «Compras»: la importación exige exactamente esos encabezados.',
+    '• Borre las filas 2–4 de ejemplo y escriba sus datos a partir de la fila 2 (la primera fila de datos debe quedar en la fila 2).',
+    '• Cada fila = una línea de detalle (un producto).',
+    '• Varias filas con el mismo grupo_doc = un solo comprobante con varias líneas.',
+    '• Cambie grupo_doc para el siguiente comprobante.',
+    '• ruc_proveedor: debe existir en Proveedores (maestro).',
+    '• codigo_item: código del producto en Inventario.',
+    '• tipo: FACTURA_COMPRA, BOLETA_COMPRA, etc. (vacío = FACTURA_COMPRA).',
+    '• condicion_pago: CONTADO o CREDITO. Si CREDITO, fecha_vencimiento obligatoria.',
+    '• precios_con_igv: S o N.',
+    '• afecta_stock: S = al registrar mueve inventario y kardex; N = documento contable sin movimiento de stock.',
+    '• La importación crea borradores; registre el ingreso a stock desde la lista (si afecta_stock es S).',
+  ]
+  lines.forEach((line, idx) => {
+    const c = inst.getCell(idx + 1, 1)
+    c.value = line
+    if (idx === 0) c.font = { bold: true, size: 13 }
+  })
+  inst.getColumn(1).width = 88
+
+  const buf = await wb.xlsx.writeBuffer()
+  const blob = new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = 'plantilla_facturas_proveedor.xlsx'
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function parseComprasSheet(sheet: ExcelJS.Worksheet): { lines: CompraImportLine[]; errors: string[] } {
+  const errors: string[] = []
+  const lines: CompraImportLine[] = []
+  const h1 = sheet.getRow(1)
+  const got: string[] = []
+  h1.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    got[colNumber - 1] = cellToString(cell.value).toLowerCase()
+  })
+  for (let i = 0; i < PLANTILLA_COMPRAS_HEADERS.length; i++) {
+    const exp = PLANTILLA_COMPRAS_HEADERS[i]
+    const g = (got[i] || '').trim()
+    if (g !== exp) {
+      errors.push(
+        `La fila 1 debe tener las columnas de la plantilla (columna ${i + 1}: se esperaba "${exp}", se leyó "${g || '(vacío)'}"). Descargue la plantilla oficial.`,
+      )
+      return { lines: [], errors }
+    }
+  }
+
+  const maxRow = sheet.rowCount || 0
+  for (let r = 2; r <= maxRow; r++) {
+    const g0 = cellToString(sheet.getCell(r, 1).value)
+    if (!g0) continue
+    const ruc = cellToString(sheet.getCell(r, 2).value)
+    let tipo = cellToString(sheet.getCell(r, 3).value).toUpperCase()
+    if (!tipo) tipo = 'FACTURA_COMPRA'
+    const serie = cellToString(sheet.getCell(r, 4).value)
+    const numero = cellToString(sheet.getCell(r, 5).value)
+    const fechaRaw = sheet.getCell(r, 6).value
+    const fecha = cellToFechaIso(fechaRaw)
+    const condicion = cellToString(sheet.getCell(r, 7).value).toUpperCase()
+    const fvRaw = sheet.getCell(r, 8).value
+    const fechaVenc = cellToFechaIso(fvRaw) || ''
+    const precioIncluyeIgv = ynToBool(cellToString(sheet.getCell(r, 9).value))
+    const codigoItem = cellToString(sheet.getCell(r, 10).value)
+    const cantidad = cellToString(sheet.getCell(r, 11).value)
+    const precioUnit = cellToString(sheet.getCell(r, 12).value)
+    const afectaStockRaw = cellToString(sheet.getCell(r, 13).value)
+    const afectaStock = afectaStockRaw === '' ? true : ynToBool(afectaStockRaw)
+
+    const rowMsgs: string[] = []
+    if (!ruc) rowMsgs.push(`Fila ${r}: falta ruc_proveedor.`)
+    if (!TIPOS_COMPRA_IMPORT.has(tipo)) rowMsgs.push(`Fila ${r}: tipo inválido (${tipo}).`)
+    if (!fecha) rowMsgs.push(`Fila ${r}: fecha inválida o vacía.`)
+    if (condicion !== 'CONTADO' && condicion !== 'CREDITO')
+      rowMsgs.push(`Fila ${r}: condicion_pago debe ser CONTADO o CREDITO.`)
+    if (condicion === 'CREDITO' && !fechaVenc) rowMsgs.push(`Fila ${r}: en CREDITO indique fecha_vencimiento.`)
+    if (!codigoItem) rowMsgs.push(`Fila ${r}: falta codigo_item.`)
+    const cQty = Number(String(cantidad).replace(',', '.'))
+    const cPu = Number(String(precioUnit).replace(',', '.'))
+    if (!Number.isFinite(cQty) || cQty <= 0) rowMsgs.push(`Fila ${r}: cantidad inválida.`)
+    if (!Number.isFinite(cPu) || cPu < 0) rowMsgs.push(`Fila ${r}: precio_unit inválido.`)
+    if (afectaStockRaw !== '' && !/^(S|N|SI|NO|Y|1|0|TRUE|FALSE)$/i.test(afectaStockRaw.trim()))
+      rowMsgs.push(`Fila ${r}: afecta_stock debe ser S o N (vacío = S).`)
+    if (rowMsgs.length) {
+      errors.push(...rowMsgs)
+      continue
+    }
+
+    lines.push({
+      rowExcel: r,
+      grupo: g0,
+      ruc,
+      tipo,
+      serie,
+      numero,
+      fecha: fecha || '',
+      condicion,
+      fechaVenc,
+      precioIncluyeIgv,
+      codigoItem,
+      cantidad: String(cantidad).replace(',', '.'),
+      precioUnit: String(precioUnit).replace(',', '.'),
+      afectaStock,
+    })
+  }
+
+  return { lines, errors }
+}
+
+function clickImportComprasExcel() {
+  bulkImportMsg.value = ''
+  if (!canUseComprasExcel.value) {
+    errorMsg.value = 'Seleccione una empresa en la barra superior para importar (modo administrador).'
+    return
+  }
+  importComprasInputRef.value?.click()
+}
+
+async function onImportComprasExcelFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (!canUseComprasExcel.value) {
+    errorMsg.value = 'Seleccione una empresa en la barra superior para importar (modo administrador).'
+    return
+  }
+
+  importComprasBusy.value = true
+  bulkImportMsg.value = ''
+  errorMsg.value = ''
+  try {
+    const wb = new ExcelJS.Workbook()
+    const ab = await file.arrayBuffer()
+    await wb.xlsx.load(ab)
+    const sheet = wb.worksheets[0]
+    if (!sheet) {
+      errorMsg.value = 'El archivo no tiene hojas de cálculo.'
+      return
+    }
+
+    const { lines, errors } = parseComprasSheet(sheet)
+    if (errors.length) {
+      errorMsg.value = errors.slice(0, 8).join(' ') + (errors.length > 8 ? ' …' : '')
+      return
+    }
+    if (!lines.length) {
+      errorMsg.value = 'No hay filas de datos (desde la fila 2).'
+      return
+    }
+
+    const [provRes, itemsRes] = await Promise.all([
+      api.get<{ results?: ProvCat[] }>('/core/proveedores/?page_size=500&ordering=razon_social'),
+      api.get<{ results?: ItemCat[] }>('/inventario/items/?page_size=500'),
+    ])
+    const proveedores = provRes.data?.results ?? []
+    const items = itemsRes.data?.results ?? []
+
+    const byGrupo = new Map<string, CompraImportLine[]>()
+    for (const ln of lines) {
+      const k = ln.grupo.trim()
+      if (!byGrupo.has(k)) byGrupo.set(k, [])
+      byGrupo.get(k)!.push(ln)
+    }
+
+    const fail: string[] = []
+    let ok = 0
+    for (const [, groupLines] of byGrupo) {
+      if (!groupLines.length) continue
+      const first = groupLines[0]!
+      const k0 = cabKeyLine(first)
+      for (const ln of groupLines.slice(1)) {
+        if (cabKeyLine(ln) !== k0) {
+          fail.push(
+            `Grupo "${first.grupo}": las filas ${groupLines.map((x) => x.rowExcel).join(', ')} deben repetir los mismos datos de cabecera (RUC, tipo, serie, número, fecha, pago, vencimiento, precios_con_igv).`,
+          )
+          break
+        }
+      }
+    }
+    if (fail.length) {
+      errorMsg.value = fail[0] ?? 'Error de agrupación.'
+      return
+    }
+
+    for (const [, groupLines] of byGrupo) {
+      if (!groupLines.length) continue
+      const first = groupLines[0]!
+      const pid = proveedorIdPorRuc(first.ruc, proveedores)
+      if (pid == null) {
+        fail.push(`Grupo "${first.grupo}": no hay proveedor con documento "${first.ruc}".`)
+        continue
+      }
+      const lineasPayload: { item_id: number; cantidad: string; precio_unit: string }[] = []
+      let groupItemError: string | null = null
+      for (const ln of groupLines) {
+        const iid = itemIdPorCodigo(ln.codigoItem, items)
+        if (iid == null) {
+          groupItemError = `Fila ${ln.rowExcel}: código de ítem "${ln.codigoItem}" no encontrado.`
+          break
+        }
+        lineasPayload.push({
+          item_id: iid,
+          cantidad: ln.cantidad,
+          precio_unit: ln.precioUnit,
+        })
+      }
+      if (groupItemError) {
+        fail.push(groupItemError)
+        continue
+      }
+
+      const body: Record<string, unknown> = {
+        proveedor_id: pid,
+        tipo: first.tipo,
+        serie: first.serie.trim().slice(0, 10),
+        numero: first.numero.trim().slice(0, 20),
+        fecha: first.fecha,
+        lineas: lineasPayload,
+        condicion_pago: first.condicion,
+        fecha_vencimiento: first.condicion === 'CREDITO' ? first.fechaVenc : null,
+        precio_incluye_igv: first.precioIncluyeIgv,
+        afecta_stock: first.afectaStock,
+      }
+      const emp = ctx.empresaId
+      if (emp) body.empresa_id = Number(emp)
+
+      try {
+        await api.post('/compras/documentos/alta-borrador/', body)
+        ok += 1
+      } catch (e) {
+        fail.push(
+          `Grupo "${first.grupo}" (${first.serie}-${first.numero}): ${detailFromAxios(e, 'Error al crear borrador.')}`,
+        )
+      }
+    }
+
+    if (fail.length && ok === 0) {
+      errorMsg.value = fail.slice(0, 5).join(' ') + (fail.length > 5 ? ' …' : '')
+      bulkImportMsg.value = ''
+      return
+    }
+    bulkImportOk.value = fail.length === 0
+    bulkImportMsg.value =
+      `Importación terminada: ${ok} comprobante(s) en borrador.` +
+      (fail.length ? ` Errores (${fail.length}): ${fail.slice(0, 3).join(' ')}${fail.length > 3 ? ' …' : ''}` : '')
+    await load()
+  } catch {
+    errorMsg.value = 'No se pudo leer el archivo Excel.'
+  } finally {
+    importComprasBusy.value = false
+  }
+}
+
 function formatDate(v: unknown): string {
   if (typeof v !== 'string' || !v) return '—'
   return v.slice(0, 10).split('-').reverse().join('/')
@@ -179,6 +672,16 @@ function condicionPagoLabel(row: DocRow): string {
   if (c === 'CREDITO') return 'Crédito'
   if (c === 'CONTADO') return 'Contado'
   return typeof c === 'string' ? c : '—'
+}
+
+function rowAfectaStock(row: DocRow): boolean {
+  const v = row.afecta_stock
+  if (v === false || v === 'false' || v === 0) return false
+  return true
+}
+
+function labelStockKardex(row: DocRow): string {
+  return rowAfectaStock(row) ? 'Kardex sí' : 'Kardex no'
 }
 
 function puedeVerPagosProveedor(row: DocRow): boolean {
@@ -330,8 +833,6 @@ async function submitModalPagoCompras() {
   }
 }
 
-const ctx = useAppContextStore()
-
 /** Si no es null, el modal edita este borrador (PATCH actualizar-borrador). */
 const editingDocId = ref<number | null>(null)
 
@@ -352,6 +853,8 @@ const formCab = reactive({
   condicion_pago: 'CONTADO' as 'CONTADO' | 'CREDITO',
   fecha_vencimiento: '',
   precio_incluye_igv: false,
+  /** Si es false, al emitir no se crean movimientos de inventario (no aparece en kardex). */
+  afecta_stock: true,
 })
 
 /** Captura / alta rápida de proveedor (misma idea que cliente en ventas). */
@@ -565,6 +1068,9 @@ async function crearProveedorDesdeForm() {
     const body: Record<string, unknown> = {
       razon_social: rs.slice(0, 255),
       documento: doc,
+      email: '',
+      telefono: '',
+      direccion: '',
       activo: true,
     }
     if (ctx.isSuperuser && ctx.empresaId) {
@@ -608,6 +1114,7 @@ async function openNuevaFactura() {
   formCab.condicion_pago = 'CONTADO'
   formCab.fecha_vencimiento = ''
   formCab.precio_incluye_igv = false
+  formCab.afecta_stock = true
   formProveedor.tipo_doc = 'RUC'
   formProveedor.documento = ''
   formProveedor.razon_social = ''
@@ -675,6 +1182,7 @@ function buildAltaBorradorBody(): Record<string, unknown> {
     fecha_vencimiento:
       formCab.condicion_pago === 'CREDITO' ? formCab.fecha_vencimiento.trim() || null : null,
     precio_incluye_igv: formCab.precio_incluye_igv,
+    afecta_stock: formCab.afecta_stock,
   }
   const emp = ctx.empresaId
   if (emp) body.empresa_id = Number(emp)
@@ -697,9 +1205,7 @@ function precioUnitUiDesdeLineaApi(precioUnit: unknown, precioIncluyeIgv: boolea
   return String(r)
 }
 
-async function openEditarBorrador(row: DocRow) {
-  const id = row.id
-  if (typeof id !== 'number' || rowEstado(row) !== 'BORRADOR') return
+async function openEditarBorradorPorId(id: number) {
   submitError.value = ''
   editingDocId.value = id
   showModal.value = true
@@ -715,6 +1221,7 @@ async function openEditarBorrador(row: DocRow) {
         condicion_pago?: string
         fecha_vencimiento?: string | null
         precio_incluye_igv?: boolean
+        afecta_stock?: boolean
         lineas?: { item?: number; cantidad?: string; precio_unit?: string }[]
       }>(`/compras/documentos/${id}/`),
       api.get<{ results?: ProvCat[] }>('/core/proveedores/?page_size=500&ordering=razon_social').catch(() => null),
@@ -736,6 +1243,7 @@ async function openEditarBorrador(row: DocRow) {
     formCab.fecha_vencimiento =
       typeof d.fecha_vencimiento === 'string' ? d.fecha_vencimiento.slice(0, 10) : ''
     formCab.precio_incluye_igv = !!d.precio_incluye_igv
+    formCab.afecta_stock = d.afecta_stock !== false
 
     const prov = proveedoresCatalog.value.find((p) => p.id === pid)
     if (prov) {
@@ -761,6 +1269,62 @@ async function openEditarBorrador(row: DocRow) {
     showModal.value = false
   } finally {
     catalogLoading.value = false
+  }
+}
+
+async function openEditarBorrador(row: DocRow) {
+  const id = row.id
+  if (typeof id !== 'number' || rowEstado(row) !== 'BORRADOR') return
+  await openEditarBorradorPorId(id)
+}
+
+const showReabrirModal = ref(false)
+const reabrirRow = ref<DocRow | null>(null)
+const reabrirSubmitting = ref(false)
+const reabrirError = ref('')
+
+const reabrirResumenReversion = computed(() => {
+  const r = reabrirRow.value
+  if (!r) return [] as string[]
+  const out: string[] = []
+  if (rowAfectaStock(r)) out.push('Se revertirá el movimiento de inventario (kardex).')
+  if (r.condicion_pago === 'CREDITO') out.push('Se revertirán los pagos a proveedor registrados en tesorería.')
+  return out
+})
+
+function abrirModalReabrirParaEditar(row: DocRow) {
+  const id = row.id
+  if (typeof id !== 'number' || rowEstado(row) !== 'EMITIDO') return
+  reabrirRow.value = row
+  reabrirError.value = ''
+  showReabrirModal.value = true
+}
+
+function cerrarModalReabrirParaEditar() {
+  if (reabrirSubmitting.value) return
+  showReabrirModal.value = false
+  reabrirRow.value = null
+  reabrirError.value = ''
+}
+
+async function confirmarReabrirParaEditar() {
+  const row = reabrirRow.value
+  const id = row?.id
+  if (typeof id !== 'number') return
+  actionBusyId.value = id
+  reabrirSubmitting.value = true
+  reabrirError.value = ''
+  try {
+    await api.post(`/compras/documentos/${id}/reabrir-borrador/`)
+    showReabrirModal.value = false
+    reabrirRow.value = null
+    await load()
+    await openEditarBorradorPorId(id)
+  } catch (e) {
+    reabrirError.value = detailFromAxios(e, 'No se pudo reabrir el documento para edición.')
+  } finally {
+    reabrirSubmitting.value = false
+    actionBusyId.value = null
   }
 }
 
@@ -825,20 +1389,17 @@ async function guardarEIngresarStock() {
   }
 }
 
-function detailFromAxios(e: unknown, fallback: string): string {
-  if (axios.isAxiosError(e) && e.response?.data) {
-    const d = e.response.data as Record<string, unknown>
-    if (typeof d.detail === 'string') return d.detail
-    if (Array.isArray(d.detail)) return d.detail.map(String).join(' ')
-  }
-  return fallback
-}
-
 /** Almacén elegido en el modal de nueva factura (solo para “Registrar e ingresar stock”). */
 const formAlmacenId = ref<number | ''>('')
 
 const showEmitModal = ref(false)
 const emitRow = ref<DocRow | null>(null)
+
+const emitModalAfectaStock = computed(() => {
+  const r = emitRow.value
+  if (!r) return true
+  return rowAfectaStock(r)
+})
 const emitAlmacenId = ref<number | ''>('')
 const emitSubmitting = ref(false)
 const emitError = ref('')
@@ -930,17 +1491,41 @@ const modalFacturaTitulo = computed(() =>
           <h1 class="title">Facturas de proveedores</h1>
           <p class="lead">
             Registre compras a sus proveedores como documento <strong>interno</strong> (no se declara a SUNAT). Al
-            <strong>registrar el ingreso</strong> se actualiza el inventario. Compras a <strong>crédito</strong> generan un
+            <strong>registrar el ingreso</strong> se actualiza el inventario (kardex), salvo que marque
+            <strong>sin movimiento de inventario</strong> en el documento. Compras a <strong>crédito</strong> generan un
             pendiente en Tesorería → Cuentas por pagar; al <strong>contado</strong> no.
           </p>
         </div>
-        <button type="button" class="btn-create" @click="openNuevaFactura">
-          <span class="plus" aria-hidden="true">+</span>
-          Nueva factura de proveedor
-        </button>
-      </div>
-      <div class="toolbar-right">
-        <button type="button" class="icon-btn" title="Actualizar" @click="refresh">↻</button>
+        <div class="toolbar-actions-row">
+          <button type="button" class="btn-create" @click="openNuevaFactura">
+            <span class="plus" aria-hidden="true">+</span>
+            Nueva factura de proveedor
+          </button>
+          <button type="button" class="btn-tool-secondary" @click="descargarPlantillaComprasExcel">
+            Descargar plantilla
+          </button>
+          <button
+            type="button"
+            class="btn-tool-secondary"
+            :disabled="importComprasBusy || !canUseComprasExcel"
+            :title="
+              !canUseComprasExcel
+                ? 'Seleccione empresa en la barra superior (administrador).'
+                : 'Subir Excel con la misma estructura que la plantilla (hoja Compras).'
+            "
+            @click="clickImportComprasExcel"
+          >
+            {{ importComprasBusy ? 'Importando…' : 'Importar Excel' }}
+          </button>
+          <button type="button" class="btn-tool-ghost" :disabled="loading" @click="refresh">Actualizar</button>
+          <input
+            ref="importComprasInputRef"
+            type="file"
+            class="sr-only"
+            accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            @change="onImportComprasExcelFile"
+          />
+        </div>
       </div>
     </header>
 
@@ -966,6 +1551,9 @@ const modalFacturaTitulo = computed(() =>
     </section>
 
     <p v-if="errorMsg" class="err-banner">{{ errorMsg }}</p>
+    <p v-if="bulkImportMsg" class="import-notice" :class="bulkImportOk ? 'import-notice--ok' : 'import-notice--warn'">
+      {{ bulkImportMsg }}
+    </p>
 
     <div class="compras-pay-panel">
       <p class="compras-pay-panel__hint">
@@ -1020,6 +1608,7 @@ const modalFacturaTitulo = computed(() =>
                 <th>Pago</th>
                 <th>Venc.</th>
                 <th>Estado</th>
+                <th>Inventario</th>
                 <th>Origen</th>
                 <th class="td-gestion">Gestión</th>
                 <th class="td-actions">Acciones</th>
@@ -1054,6 +1643,18 @@ const modalFacturaTitulo = computed(() =>
                     >{{ rowEstado(row) === 'BORRADOR' ? 'Borrador' : 'Registrado' }}</span
                   >
                 </td>
+                <td>
+                  <span
+                    class="pill"
+                    :class="rowAfectaStock(row) ? 'pill--ok' : 'pill--muted'"
+                    :title="
+                      rowAfectaStock(row)
+                        ? 'Al registrar se generan movimientos de stock (kardex).'
+                        : 'Al registrar no se mueve inventario; no aparece en kardex.'
+                    "
+                    >{{ labelStockKardex(row) }}</span
+                  >
+                </td>
                 <td><span class="pill pill--muted">Interno</span></td>
                 <td class="td-gestion">
                   <div class="cmp-gestion-icons" role="group" :aria-label="`Gestión documento ${numeroCompra(row)}`">
@@ -1064,6 +1665,24 @@ const modalFacturaTitulo = computed(() =>
                       title="Editar borrador"
                       :disabled="actionBusyId === row.id"
                       @click="openEditarBorrador(row)"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          stroke="currentColor"
+                          stroke-width="1.75"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"
+                        />
+                      </svg>
+                    </button>
+                    <button
+                      v-if="rowEstado(row) === 'EMITIDO'"
+                      type="button"
+                      class="cmp-icon-btn cmp-icon-btn--edit"
+                      title="Reabrir a borrador: revierte stock y/o pagos a proveedor, luego edita"
+                      :disabled="actionBusyId === row.id"
+                      @click="abrirModalReabrirParaEditar(row)"
                     >
                       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <path
@@ -1322,6 +1941,13 @@ const modalFacturaTitulo = computed(() =>
                 <input v-model="formCab.precio_incluye_igv" type="checkbox" />
                 <span>El precio unitario incluye IGV (18%)</span>
               </label>
+              <label class="fld fld-check-igv">
+                <input v-model="formCab.afecta_stock" type="checkbox" />
+                <span
+                  >Este documento <strong>mueve inventario</strong> al registrarlo (ingreso en kardex). Desmarque si es
+                  solo contable o no afecta stock.</span
+                >
+              </label>
               <div class="lineas-wrap">
                 <div v-for="(ln, i) in lineasForm" :key="i" class="linea-row">
                   <select v-model="ln.item_id" class="inp inp-item">
@@ -1398,10 +2024,17 @@ const modalFacturaTitulo = computed(() =>
     <Teleport to="body">
       <div v-if="showEmitModal" class="modal-backdrop" @click.self="cerrarEmitModal">
         <div class="modal-panel modal-panel--sm" role="dialog" aria-modal="true">
-          <h2 class="modal-title">Ingresar stock</h2>
+          <h2 class="modal-title">{{ emitModalAfectaStock ? 'Ingresar stock' : 'Registrar documento' }}</h2>
           <p class="modal-lead">
-            Se registrará el ingreso de mercadería según las líneas del documento
-            <strong>{{ emitRow ? numeroCompra(emitRow) : '' }}</strong>.
+            <template v-if="emitModalAfectaStock">
+              Se registrará el ingreso de mercadería según las líneas del documento
+              <strong>{{ emitRow ? numeroCompra(emitRow) : '' }}</strong>.
+            </template>
+            <template v-else>
+              El documento <strong>{{ emitRow ? numeroCompra(emitRow) : '' }}</strong> está marcado
+              <strong>sin movimiento de inventario</strong>: no se crearán líneas en kardex. Solo se confirmará como
+              registrado (y tesorería si aplica).
+            </template>
           </p>
           <label class="fld">
             <span>Almacén</span>
@@ -1418,7 +2051,43 @@ const modalFacturaTitulo = computed(() =>
               Cancelar
             </button>
             <button type="button" class="btn-primary" :disabled="emitSubmitting" @click="confirmarEmitir">
-              {{ emitSubmitting ? '…' : 'Confirmar ingreso' }}
+              {{ emitSubmitting ? '…' : emitModalAfectaStock ? 'Confirmar ingreso' : 'Confirmar registro' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showReabrirModal"
+        class="modal-backdrop"
+        role="presentation"
+        @click.self="cerrarModalReabrirParaEditar"
+      >
+        <div
+          class="modal-panel modal-panel--sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="cmp-reabrir-title"
+        >
+          <h2 id="cmp-reabrir-title" class="modal-title">Reabrir para editar</h2>
+          <p class="modal-lead">
+            El documento
+            <strong>{{ reabrirRow ? numeroCompra(reabrirRow) : '' }}</strong>
+            volverá a <strong>borrador</strong>. Después deberá registrar de nuevo el ingreso a stock o el pago si
+            corresponde.
+          </p>
+          <ul v-if="reabrirResumenReversion.length" class="reabrir-checklist">
+            <li v-for="(t, i) in reabrirResumenReversion" :key="i">{{ t }}</li>
+          </ul>
+          <p v-if="reabrirError" class="form-err">{{ reabrirError }}</p>
+          <div class="modal-foot">
+            <button type="button" class="btn-ghost" :disabled="reabrirSubmitting" @click="cerrarModalReabrirParaEditar">
+              Cancelar
+            </button>
+            <button type="button" class="btn-primary" :disabled="reabrirSubmitting" @click="confirmarReabrirParaEditar">
+              {{ reabrirSubmitting ? '…' : 'Continuar' }}
             </button>
           </div>
         </div>
@@ -1536,6 +2205,93 @@ const modalFacturaTitulo = computed(() =>
 
 .btn-create:hover {
   filter: brightness(1.06);
+}
+
+.toolbar-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btn-tool-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid #0d9488;
+  background: #fff;
+  color: #0f766e;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.btn-tool-secondary:hover:not(:disabled) {
+  background: #f0fdfa;
+}
+
+.btn-tool-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-tool-ghost {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  font-weight: 600;
+  font-size: 0.8rem;
+  cursor: pointer;
+  font: inherit;
+}
+
+.btn-tool-ghost:hover:not(:disabled) {
+  border-color: #94a3b8;
+  color: #334155;
+}
+
+.btn-tool-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.import-notice {
+  margin: 0 0 0.65rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.import-notice--ok {
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  color: #166534;
+}
+
+.import-notice--warn {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  color: #92400e;
 }
 
 .plus {
@@ -2066,6 +2822,22 @@ const modalFacturaTitulo = computed(() =>
   font-size: 0.82rem;
   line-height: 1.45;
   color: #64748b;
+}
+
+.reabrir-checklist {
+  margin: 0 0 0.85rem 1rem;
+  padding: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #334155;
+}
+
+.reabrir-checklist li {
+  margin-bottom: 0.35rem;
+}
+
+.reabrir-checklist li::marker {
+  color: #0d9488;
 }
 
 .block {

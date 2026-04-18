@@ -45,6 +45,11 @@ const form = ref({
 const rowBusy = ref<number | null>(null)
 const importBloqueado = computed(() => isSuperuser.value && !empresaId.value)
 
+const importInput = ref<HTMLInputElement | null>(null)
+const importing = ref(false)
+const importMsg = ref('')
+const importErr = ref('')
+
 const consultReniecLoading = ref(false)
 const reniecMsg = ref('')
 const reniecIsError = ref(false)
@@ -95,6 +100,71 @@ async function load() {
     rows.value = []
   } finally {
     loading.value = false
+  }
+}
+
+async function descargarPlantilla() {
+  err.value = ''
+  try {
+    const { data } = await api.get('/core/vendedores/plantilla-excel/', { responseType: 'blob' })
+    const blob = new Blob([data], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'plantilla_vendedores.xlsx'
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch {
+    err.value = 'No se pudo descargar la plantilla.'
+  }
+}
+
+function abrirSelectorImport() {
+  importMsg.value = ''
+  importErr.value = ''
+  if (importBloqueado.value) return
+  importInput.value?.click()
+}
+
+async function onImportFile(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || importBloqueado.value) return
+
+  const fd = new FormData()
+  fd.append('file', file)
+  if (isSuperuser.value && empresaId.value) {
+    fd.append('empresa', empresaId.value)
+  }
+
+  importing.value = true
+  importMsg.value = ''
+  importErr.value = ''
+  err.value = ''
+  try {
+    const { data } = await api.post<{
+      creados: number
+      actualizados: number
+      errores: { fila: number; mensaje: string }[]
+    }>('/core/vendedores/importar-excel/', fd)
+
+    importMsg.value = `Listo: ${data.creados} creados, ${data.actualizados} actualizados.`
+    if (data.errores?.length) {
+      importErr.value = data.errores.map((e) => `Fila ${e.fila}: ${e.mensaje}`).join('\n')
+    }
+    await load()
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.data) {
+      const d = e.response.data
+      importErr.value = d instanceof Blob ? 'Error al importar (revise el archivo).' : drfMsg(d)
+    } else {
+      importErr.value = 'Error de conexión al importar.'
+    }
+  } finally {
+    importing.value = false
   }
 }
 
@@ -296,6 +366,29 @@ onMounted(load)
         >
           + Agregar vendedor
         </button>
+        <button type="button" class="btn-tpl" :disabled="loading" @click="descargarPlantilla">
+          Descargar plantilla
+        </button>
+        <button
+          type="button"
+          class="btn-imp"
+          :disabled="loading || importing || importBloqueado"
+          :title="
+            importBloqueado
+              ? 'Seleccione una empresa en la barra superior (modo plataforma)'
+              : 'Subir Excel .xlsx completado'
+          "
+          @click="abrirSelectorImport"
+        >
+          {{ importing ? 'Importando…' : 'Importar Excel' }}
+        </button>
+        <input
+          ref="importInput"
+          type="file"
+          class="sr-only"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          @change="onImportFile"
+        />
         <button type="button" class="btn-ref" :disabled="loading" @click="load">
           {{ loading ? '…' : 'Actualizar' }}
         </button>
@@ -303,8 +396,10 @@ onMounted(load)
     </header>
 
     <p v-if="importBloqueado" class="warn">
-      Modo administrador global: elija una empresa en la barra superior para crear o editar vendedores.
+      Modo administrador global: elija una empresa en la barra superior para crear, editar o importar vendedores.
     </p>
+    <p v-if="importMsg" class="ok-msg">{{ importMsg }}</p>
+    <p v-if="importErr" class="import-err">{{ importErr }}</p>
     <p v-if="err" class="err">{{ err }}</p>
 
     <div class="filters">
@@ -541,6 +636,64 @@ onMounted(load)
 .head-actions .btn-ref:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+.head-actions .btn-tpl {
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #0369a1;
+  background: #f0f9ff;
+  color: #0369a1;
+  font-weight: 600;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  font-family: inherit;
+  cursor: pointer;
+}
+.head-actions .btn-tpl:hover:not(:disabled) {
+  background: #e0f2fe;
+}
+.head-actions .btn-imp {
+  padding: 0.45rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #0e7490;
+  background: #0e7490;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.8rem;
+  line-height: 1.25;
+  font-family: inherit;
+  cursor: pointer;
+}
+.head-actions .btn-imp:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.head-actions .btn-imp:disabled,
+.head-actions .btn-tpl:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.ok-msg {
+  font-size: 0.85rem;
+  color: #166534;
+  margin: 0 0 0.35rem;
+}
+.import-err {
+  font-size: 0.8rem;
+  color: #b91c1c;
+  white-space: pre-wrap;
+  margin: 0 0 0.75rem;
+  line-height: 1.4;
 }
 /* Modal y otros usos fuera de .head-actions */
 .btn-add {

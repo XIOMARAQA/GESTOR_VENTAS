@@ -117,6 +117,9 @@ class Proveedor(models.Model):
     )
     razon_social = models.CharField(max_length=255)
     documento = models.CharField(max_length=20, blank=True, db_index=True)
+    email = models.EmailField(blank=True)
+    direccion = models.TextField(blank=True)
+    telefono = models.CharField(max_length=40, blank=True)
     activo = models.BooleanField(default=True)
 
     class Meta:

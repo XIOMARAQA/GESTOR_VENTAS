@@ -1,6 +1,5 @@
 """
-Plantilla e importación Excel de proveedores por empresa.
-Tabla ``proveedor``: documento (opcional), razón social, email, teléfono, dirección, activo.
+Plantilla e importación Excel de marcas por empresa.
 """
 
 from __future__ import annotations
@@ -14,26 +13,15 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
 from apps.core.excel_template_style import style_help_sheet_title_cell, style_import_sheet_header
-from apps.core.models import Proveedor
+from apps.inventario.models import Marca
 
-SHEET_DATA = "Proveedores"
+SHEET_DATA = "Marcas"
 SHEET_HELP = "Instrucciones"
 
-HEADERS = [
-    "documento",
-    "razon_social",
-    "email",
-    "telefono",
-    "direccion",
-    "activo",
-]
+HEADERS = ["nombre", "activo"]
 
 HEADER_LABELS = [
-    "Documento (RUC/DNI, opcional; clave si ya existe)",
-    "Razón social o nombre (obligatorio)",
-    "Email (opcional)",
-    "Teléfono (opcional)",
-    "Dirección (opcional)",
+    "Nombre (obligatorio; único por empresa)",
     "Activo (Sí/No)",
 ]
 
@@ -57,37 +45,28 @@ def _cell_str(val: Any) -> str:
     return str(val).strip()
 
 
-def build_proveedores_template_xlsx() -> bytes:
+def build_marcas_template_xlsx() -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = SHEET_DATA
 
     for col, label in enumerate(HEADER_LABELS, start=1):
         ws.cell(row=1, column=col, value=label)
-        ws.column_dimensions[get_column_letter(col)].width = min(42, max(18, len(label) + 3))
+        ws.column_dimensions[get_column_letter(col)].width = min(48, max(18, len(label) + 3))
 
     style_import_sheet_header(ws, len(HEADERS))
 
-    example = [
-        "20123456789",
-        "Proveedor de ejemplo — elimine esta fila",
-        "",
-        "",
-        "",
-        "Sí",
-    ]
+    example = ["Marca de ejemplo — elimine esta fila", "Sí"]
     for col, v in enumerate(example, start=1):
         ws.cell(row=2, column=col, value=v)
 
     wh = wb.create_sheet(SHEET_HELP)
-    wh["A1"] = "Importación de proveedores"
+    wh["A1"] = "Importación de marcas"
     style_help_sheet_title_cell(wh, "A1")
     lines = [
-        "1. Hoja «Proveedores»: datos desde la fila 2 (puede borrar la fila de ejemplo).",
-        "2. Columnas: documento, razón social, email, teléfono, dirección y activo (como en el maestro web).",
-        "3. Si indica un documento que ya existe en su empresa, se actualizan los demás campos.",
-        "4. Si el documento está vacío, siempre se crea un proveedor nuevo (puede haber duplicados sin documento).",
-        "5. Guarde como .xlsx y use «Importar Excel» en la pantalla de proveedores.",
+        "1. Hoja «Marcas»: datos desde la fila 2 (puede borrar la fila de ejemplo).",
+        "2. El nombre debe ser único por empresa; si ya existe, se actualiza el campo activo.",
+        "3. Guarde como .xlsx y use «Importar Excel» en la pantalla de marcas.",
     ]
     for i, line in enumerate(lines, start=3):
         wh.cell(row=i, column=1, value=line)
@@ -109,7 +88,7 @@ def _header_map(ws) -> dict[str, int]:
             if s == label.lower() or s == HEADERS[i]:
                 col_by_key[HEADERS[i]] = idx
                 break
-    if len(col_by_key) < 2:
+    if len(col_by_key) < 1:
         col_by_key = {h: i + 1 for i, h in enumerate(HEADERS)}
     return col_by_key
 
@@ -123,7 +102,7 @@ def _get(row: tuple[Any, ...], col_map: dict[str, int], key: str) -> Any:
     return None
 
 
-def import_proveedores_xlsx(content: bytes, empresa_id: int) -> dict[str, Any]:
+def import_marcas_xlsx(content: bytes, empresa_id: int) -> dict[str, Any]:
     wb = load_workbook(BytesIO(content), data_only=True)
     ws = wb[SHEET_DATA] if SHEET_DATA in wb.sheetnames else wb[wb.sheetnames[0]]
     col_map = _header_map(ws)
@@ -139,24 +118,14 @@ def import_proveedores_xlsx(content: bytes, empresa_id: int) -> dict[str, Any]:
             if row is None:
                 continue
             row = tuple(row) + tuple()
-            doc = _cell_str(_get(row, col_map, "documento"))
-            razon = _cell_str(_get(row, col_map, "razon_social"))
-            if not razon and not doc:
+            nombre = _cell_str(_get(row, col_map, "nombre"))
+            if not nombre:
                 continue
-            low = razon.lower()
-            if "elimine esta fila" in low or low.startswith("proveedor de ejemplo"):
-                continue
-            if not razon:
-                errores.append(
-                    {"fila": row_num, "mensaje": "Razón social / nombre es obligatorio."}
-                )
+            low = nombre.lower()
+            if "elimine esta fila" in low or low.startswith("marca de ejemplo"):
                 continue
 
-            razon = razon[:255]
-            doc = doc[:20]
-            email = _cell_str(_get(row, col_map, "email"))[:254]
-            tel = _cell_str(_get(row, col_map, "telefono"))[:40]
-            direccion = _cell_str(_get(row, col_map, "direccion"))
+            nombre = nombre[:120]
             raw_act = _get(row, col_map, "activo")
             if raw_act is None or (isinstance(raw_act, str) and not str(raw_act).strip()):
                 activo = True
@@ -164,35 +133,19 @@ def import_proveedores_xlsx(content: bytes, empresa_id: int) -> dict[str, Any]:
                 activo = _norm_bool(raw_act)
 
             try:
-                prov = None
-                if doc:
-                    prov = Proveedor.objects.filter(
-                        empresa_id=empresa_id, documento=doc
-                    ).first()
-                if prov:
-                    prov.razon_social = razon
-                    prov.email = email
-                    prov.telefono = tel
-                    prov.direccion = direccion
-                    prov.activo = activo
-                    prov.save(
-                        update_fields=[
-                            "razon_social",
-                            "email",
-                            "telefono",
-                            "direccion",
-                            "activo",
-                        ]
-                    )
+                m = (
+                    Marca.objects.filter(empresa_id=empresa_id)
+                    .filter(nombre__iexact=nombre)
+                    .first()
+                )
+                if m:
+                    m.activo = activo
+                    m.save(update_fields=["activo"])
                     actualizados += 1
                 else:
-                    Proveedor.objects.create(
+                    Marca.objects.create(
                         empresa_id=empresa_id,
-                        documento=doc,
-                        razon_social=razon,
-                        email=email,
-                        telefono=tel,
-                        direccion=direccion,
+                        nombre=nombre,
                         activo=activo,
                     )
                     creados += 1

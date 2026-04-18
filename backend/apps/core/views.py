@@ -11,6 +11,7 @@ from rest_framework.response import Response
 from apps.core.api_multitenancy import EmpresaScopedViewSetMixin, filter_queryset_by_empresa
 from apps.core.cliente_excel import build_clientes_template_xlsx, import_clientes_xlsx
 from apps.core.proveedor_excel import build_proveedores_template_xlsx, import_proveedores_xlsx
+from apps.core.vendedor_excel import build_vendedores_template_xlsx, import_vendedores_xlsx
 from apps.core.models import (
     Cliente,
     Empresa,
@@ -222,11 +223,41 @@ class VendedorViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
                 return
         super().perform_create(serializer)
 
+    @action(detail=False, methods=["get"], url_path="plantilla-excel")
+    def plantilla_excel(self, request):
+        if not request.user.is_authenticated:
+            raise PermissionDenied()
+        data = build_vendedores_template_xlsx()
+        resp = HttpResponse(
+            data,
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+        )
+        resp["Content-Disposition"] = 'attachment; filename="plantilla_vendedores.xlsx"'
+        return resp
+
+    @action(detail=False, methods=["post"], url_path="importar-excel")
+    def importar_excel(self, request):
+        empresa_id = _resolve_empresa_id_for_core_upload(request)
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "Adjunte un archivo Excel (.xlsx)."})
+        name = (upload.name or "").lower()
+        if not name.endswith(".xlsx"):
+            raise ValidationError({"file": "Solo se admite formato .xlsx"})
+        try:
+            body = upload.read()
+            resumen = import_vendedores_xlsx(body, empresa_id)
+        except Exception as e:
+            raise ValidationError({"file": f"No se pudo leer el archivo: {e}"}) from e
+        return Response(resumen)
+
 
 class ProveedorViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
     queryset = Proveedor.objects.select_related("empresa")
     serializer_class = ProveedorSerializer
-    search_fields = ["razon_social", "documento"]
+    search_fields = ["razon_social", "documento", "email", "telefono", "direccion"]
     ordering = ["razon_social"]
 
     def perform_create(self, serializer):

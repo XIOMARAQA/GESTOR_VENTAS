@@ -67,6 +67,7 @@ class DocumentoCompraAltaBorradorSerializer(serializers.Serializer):
     )
     fecha_vencimiento = serializers.DateField(required=False, allow_null=True)
     precio_incluye_igv = serializers.BooleanField(required=False, default=False)
+    afecta_stock = serializers.BooleanField(required=False, default=True)
 
     def validate(self, attrs):
         if attrs.get("condicion_pago") == CondicionPagoDocumento.CREDITO:
@@ -103,6 +104,7 @@ class DocumentoCompraSerializer(serializers.ModelSerializer):
             "igv",
             "total",
             "precio_incluye_igv",
+            "afecta_stock",
             "condicion_pago",
             "fecha_vencimiento",
             "es_electronica",
@@ -122,6 +124,7 @@ class DocumentoCompraSerializer(serializers.ModelSerializer):
             "igv",
             "total",
             "precio_incluye_igv",
+            "afecta_stock",
             "lineas",
             "proveedor_razon_social",
             "serie_numero",
