@@ -55,8 +55,7 @@ Ver `backend/docs/ARQUITECTURA.md` (capas, módulos, flujos venta/compra/cobranz
 2. Compras y gastos  
 3. Tesorería y cobranzas  
 4. Inventario y almacén  
-5. Restaurante  
-6. Contabilidad y reportes  
-7. Administración y mi cuenta  
+5. Contabilidad y reportes  
+6. Administración y mi cuenta  
 
 Cada uno tiene rutas bajo `/api/v1/<modulo>/` y una vista introductoria en el frontend.
