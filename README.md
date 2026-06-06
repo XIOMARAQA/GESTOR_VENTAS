@@ -51,11 +51,12 @@ Ver `backend/docs/ARQUITECTURA.md` (capas, módulos, flujos venta/compra/cobranz
 
 ## Módulos funcionales
 
-1. Ventas e ingresos (POS, documentos, pedidos, cotizaciones, guías/NC)  
-2. Compras y gastos  
-3. Tesorería y cobranzas  
-4. Inventario y almacén  
-5. Contabilidad y reportes  
-6. Administración y mi cuenta  
+1. Inicio
+2. Datos maestros
+3. Ventas e ingresos (POS, documentos, pedidos, cotizaciones, guías/NC)  
+4. Compras y gastos  
+5. Tesorería y cobranzas  
+6. Inventario y almacén   
+7. Administración 
 
 Cada uno tiene rutas bajo `/api/v1/<modulo>/` y una vista introductoria en el frontend.
