@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, createWebHashHistory } from 'vue-router'
 
 import { isLoggedIn, readHasTenantEmpresa, readIsSuperuser } from '@/auth/session'
 import AppShell from '@/layouts/AppShell.vue'
@@ -8,8 +8,14 @@ function defaultAuthedPath(): string {
   return '/panel'
 }
 
+/** En Render (sitio estático) F5 en /panel da 404 sin rewrite; hash evita pedir rutas al servidor. */
+function createAppHistory() {
+  const base = import.meta.env.BASE_URL
+  return import.meta.env.PROD ? createWebHashHistory(base) : createWebHistory(base)
+}
+
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: createAppHistory(),
   routes: [
     {
       path: '/login',

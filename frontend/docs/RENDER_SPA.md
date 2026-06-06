@@ -12,8 +12,10 @@ Vue usa rutas del navegador (`createWebHistory`). Al **recargar** una URL como `
 
 Luego **Manual Deploy**.
 
-## Opción B — Automático en el build
+## Opción B — Automático en el código (activo)
 
-El `vite.config.ts` copia `index.html` → `404.html` en `dist/`. Render sirve esa página en rutas inexistentes y Vue Router toma el control.
+En **producción** el router usa `createWebHashHistory`: la URL pasa a ser `...onrender.com/#/panel`. Al recargar, el servidor solo pide `/` y no falla.
+
+En **local** (`npm run dev`) sigue `createWebHistory` (sin `#`).
 
 Tras cambiar esto, haz **deploy del front** de nuevo.
