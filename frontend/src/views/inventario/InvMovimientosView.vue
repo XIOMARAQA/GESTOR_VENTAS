@@ -85,6 +85,7 @@ const rows = ref<MovRow[]>([])
 const kardex = ref<KardexPayload | null>(null)
 const almacenes = ref<AlmOpt[]>([])
 const items = ref<ItemOpt[]>([])
+const itemsLoading = ref(false)
 const filtroAlmacenId = ref<number | ''>('')
 const filtroProductoId = ref<number | ''>('')
 const productoBusqueda = ref('')
@@ -233,19 +234,34 @@ function itemLabel(it: ItemOpt): string {
   return c ? `${c} — ${it.nombre}` : it.nombre
 }
 
-const MAX_PRODUCTO_SUGGEST = 40
+function itemMatchesQuery(it: ItemOpt, q: string): boolean {
+  const query = q.trim().toLowerCase()
+  if (!query) return true
+  const label = itemLabel(it).toLowerCase()
+  const codigo = (it.codigo || '').trim().toLowerCase()
+  const nombre = it.nombre.trim().toLowerCase()
+  const haystack = `${codigo} ${nombre} ${label}`
+  const tokens = query.split(/\s+/).filter(Boolean)
+  return tokens.every((t) => haystack.includes(t))
+}
+
+function findBestProductoMatch(q: string): ItemOpt | undefined {
+  const trimmed = q.trim()
+  if (!trimmed) return undefined
+  const lower = trimmed.toLowerCase()
+  const exact = items.value.find((it) => itemLabel(it).toLowerCase() === lower)
+  if (exact) return exact
+  const byNombre = items.value.find((it) => it.nombre.trim().toLowerCase() === lower)
+  if (byNombre) return byNombre
+  const matches = items.value.filter((it) => itemMatchesQuery(it, trimmed))
+  if (matches.length === 1) return matches[0]
+  return undefined
+}
 
 const itemsMatches = computed(() => {
-  const q = productoBusqueda.value.trim().toLowerCase()
-  const pool = !q
-    ? items.value
-    : items.value.filter((it) => {
-        const label = itemLabel(it).toLowerCase()
-        const codigo = (it.codigo || '').trim().toLowerCase()
-        const nombre = it.nombre.trim().toLowerCase()
-        return label.includes(q) || codigo.includes(q) || nombre.includes(q)
-      })
-  return pool.slice(0, MAX_PRODUCTO_SUGGEST)
+  const q = productoBusqueda.value.trim()
+  if (!q) return items.value
+  return items.value.filter((it) => itemMatchesQuery(it, q))
 })
 
 function syncProductoBusquedaFromId() {
@@ -283,10 +299,10 @@ function syncProductoFromBusqueda() {
     const current = items.value.find((i) => i.id === filtroProductoId.value)
     if (current && itemLabel(current) === q) return
   }
-  const exact = items.value.find((it) => itemLabel(it).toLowerCase() === q.toLowerCase())
-  if (exact) {
-    filtroProductoId.value = exact.id
-    productoBusqueda.value = itemLabel(exact)
+  const match = findBestProductoMatch(q)
+  if (match) {
+    filtroProductoId.value = match.id
+    productoBusqueda.value = itemLabel(match)
     return
   }
   filtroProductoId.value = ''
@@ -328,15 +344,26 @@ async function loadAlmacenes() {
 }
 
 async function loadItems() {
+  itemsLoading.value = true
   try {
+    const all: ItemOpt[] = []
     const params = new URLSearchParams()
     params.set('page_size', '500')
     params.set('ordering', 'codigo')
     appendEmpresaParams(params)
-    const { data } = await api.get<{ results?: ItemOpt[] }>(`/inventario/items/?${params}`)
-    items.value = Array.isArray(data) ? data : (data.results ?? [])
+    let path: string | null = `/inventario/items/?${params}`
+    while (path) {
+      const { data } = await api.get<{ results?: ItemOpt[]; next?: string | null } | ItemOpt[]>(path)
+      const chunk = Array.isArray(data) ? data : (data.results ?? [])
+      all.push(...chunk)
+      const next = Array.isArray(data) ? null : data.next
+      path = next ? drfRelativePath(next) : null
+    }
+    items.value = all
   } catch {
     items.value = []
+  } finally {
+    itemsLoading.value = false
   }
 }
 
@@ -786,22 +813,26 @@ async function descargarExcel() {
             v-model="productoBusqueda"
             type="text"
             class="inp inp--producto"
-            placeholder="Escriba código o nombre…"
+            :placeholder="itemsLoading ? 'Cargando catálogo…' : 'Escriba código o nombre, o elija de la lista'"
             autocomplete="off"
-            :disabled="bloqueadoSinEmpresa"
+            :disabled="bloqueadoSinEmpresa || itemsLoading"
             :title="
               bloqueadoSinEmpresa
                 ? 'Seleccione empresa en la barra superior'
-                : 'Busque por código o nombre y elija de la lista'
+                : 'Haga clic para ver el catálogo completo o filtre por código/nombre'
             "
+            @click="onProductoFocusIn"
             @input="onProductoInput"
           />
           <ul
-            v-if="productoSuggestOpen && itemsMatches.length && !bloqueadoSinEmpresa"
+            v-if="productoSuggestOpen && !bloqueadoSinEmpresa && !itemsLoading"
             class="producto-suggest"
             role="listbox"
             aria-label="Productos que coinciden"
           >
+            <li v-if="!itemsMatches.length" class="producto-suggest__empty">
+              Sin coincidencias. Borre el texto para ver todo el catálogo ({{ items.length }} ítems).
+            </li>
             <li
               v-for="it in itemsMatches"
               :key="it.id"
@@ -811,6 +842,9 @@ async function descargarExcel() {
             >
               <span v-if="(it.codigo || '').trim()" class="producto-suggest__cod">{{ (it.codigo || '').trim() }}</span>
               <span class="producto-suggest__nom">{{ it.nombre }}</span>
+            </li>
+            <li v-if="itemsMatches.length" class="producto-suggest__meta">
+              {{ itemsMatches.length }} de {{ items.length }} producto(s)
             </li>
           </ul>
         </div>
@@ -1089,9 +1123,24 @@ async function descargarExcel() {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   box-shadow: 0 12px 28px rgb(15 23 42 / 14%);
-  max-height: 14rem;
+  max-height: min(22rem, 55vh);
   overflow-y: auto;
   z-index: 20;
+}
+
+.producto-suggest__empty,
+.producto-suggest__meta {
+  padding: 0.45rem 0.6rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  background: #f8fafc;
+  border-top: 1px solid #f1f5f9;
+}
+
+.producto-suggest__empty {
+  border-top: none;
+  color: #9a3412;
+  background: #fff7ed;
 }
 
 .producto-suggest__item {
