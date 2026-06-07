@@ -87,6 +87,9 @@ const almacenes = ref<AlmOpt[]>([])
 const items = ref<ItemOpt[]>([])
 const filtroAlmacenId = ref<number | ''>('')
 const filtroProductoId = ref<number | ''>('')
+const productoBusqueda = ref('')
+const productoSuggestOpen = ref(false)
+let productoSuggestCloseTimer: ReturnType<typeof setTimeout> | null = null
 /** YYYY-MM (input type="month"); vacío = todo el historial */
 const filtroMes = ref('')
 const loading = ref(true)
@@ -230,6 +233,86 @@ function itemLabel(it: ItemOpt): string {
   return c ? `${c} — ${it.nombre}` : it.nombre
 }
 
+const MAX_PRODUCTO_SUGGEST = 40
+
+const itemsMatches = computed(() => {
+  const q = productoBusqueda.value.trim().toLowerCase()
+  const pool = !q
+    ? items.value
+    : items.value.filter((it) => {
+        const label = itemLabel(it).toLowerCase()
+        const codigo = (it.codigo || '').trim().toLowerCase()
+        const nombre = it.nombre.trim().toLowerCase()
+        return label.includes(q) || codigo.includes(q) || nombre.includes(q)
+      })
+  return pool.slice(0, MAX_PRODUCTO_SUGGEST)
+})
+
+function syncProductoBusquedaFromId() {
+  if (filtroProductoId.value === '') {
+    productoBusqueda.value = ''
+    return
+  }
+  const it = items.value.find((i) => i.id === filtroProductoId.value)
+  if (it) productoBusqueda.value = itemLabel(it)
+}
+
+function onProductoFocusIn() {
+  if (productoSuggestCloseTimer) {
+    clearTimeout(productoSuggestCloseTimer)
+    productoSuggestCloseTimer = null
+  }
+  productoSuggestOpen.value = true
+}
+
+function onProductoFocusOut() {
+  productoSuggestCloseTimer = setTimeout(() => {
+    productoSuggestOpen.value = false
+    productoSuggestCloseTimer = null
+    syncProductoFromBusqueda()
+  }, 220)
+}
+
+function syncProductoFromBusqueda() {
+  const q = productoBusqueda.value.trim()
+  if (!q) {
+    filtroProductoId.value = ''
+    return
+  }
+  if (filtroProductoId.value !== '') {
+    const current = items.value.find((i) => i.id === filtroProductoId.value)
+    if (current && itemLabel(current) === q) return
+  }
+  const exact = items.value.find((it) => itemLabel(it).toLowerCase() === q.toLowerCase())
+  if (exact) {
+    filtroProductoId.value = exact.id
+    productoBusqueda.value = itemLabel(exact)
+    return
+  }
+  filtroProductoId.value = ''
+}
+
+function onProductoInput() {
+  productoSuggestOpen.value = true
+  const q = productoBusqueda.value.trim()
+  if (!q) {
+    filtroProductoId.value = ''
+    return
+  }
+  if (filtroProductoId.value !== '') {
+    const current = items.value.find((i) => i.id === filtroProductoId.value)
+    if (current && itemLabel(current) !== productoBusqueda.value) {
+      filtroProductoId.value = ''
+    }
+  }
+}
+
+function pickProducto(it: ItemOpt) {
+  filtroProductoId.value = it.id
+  productoBusqueda.value = itemLabel(it)
+  productoSuggestOpen.value = false
+}
+
 async function loadAlmacenes() {
   try {
     const params = new URLSearchParams()
@@ -321,6 +404,7 @@ function goPrev() {
 function limpiarFiltrosKardex() {
   filtroAlmacenId.value = ''
   filtroProductoId.value = ''
+  productoBusqueda.value = ''
   filtroMes.value = ''
   page.value = 1
   void load()
@@ -329,10 +413,13 @@ function limpiarFiltrosKardex() {
 watch(empresaId, async () => {
   page.value = 1
   filtroProductoId.value = ''
+  productoBusqueda.value = ''
   filtroMes.value = ''
   await Promise.all([loadAlmacenes(), loadItems()])
   void load()
 })
+
+watch(items, () => syncProductoBusquedaFromId())
 
 watch([filtroAlmacenId, filtroProductoId, filtroMes], () => {
   page.value = 1
@@ -688,17 +775,45 @@ async function descargarExcel() {
           <option v-for="a in almacenes" :key="a.id" :value="a.id">{{ a.nombre }}</option>
         </select>
       </label>
-      <label class="f">
+      <label class="f f--producto">
         <span class="flab">Producto (para saldo por ítem)</span>
-        <select
-          v-model="filtroProductoId"
-          class="inp inp--select inp--producto"
-          :disabled="bloqueadoSinEmpresa"
-          :title="bloqueadoSinEmpresa ? 'Seleccione empresa en la barra superior' : ''"
+        <div
+          class="producto-combo"
+          @focusin="onProductoFocusIn"
+          @focusout="onProductoFocusOut"
         >
-          <option value="">Elija producto…</option>
-          <option v-for="it in items" :key="it.id" :value="it.id">{{ itemLabel(it) }}</option>
-        </select>
+          <input
+            v-model="productoBusqueda"
+            type="text"
+            class="inp inp--producto"
+            placeholder="Escriba código o nombre…"
+            autocomplete="off"
+            :disabled="bloqueadoSinEmpresa"
+            :title="
+              bloqueadoSinEmpresa
+                ? 'Seleccione empresa en la barra superior'
+                : 'Busque por código o nombre y elija de la lista'
+            "
+            @input="onProductoInput"
+          />
+          <ul
+            v-if="productoSuggestOpen && itemsMatches.length && !bloqueadoSinEmpresa"
+            class="producto-suggest"
+            role="listbox"
+            aria-label="Productos que coinciden"
+          >
+            <li
+              v-for="it in itemsMatches"
+              :key="it.id"
+              role="option"
+              class="producto-suggest__item"
+              @mousedown.prevent="pickProducto(it)"
+            >
+              <span v-if="(it.codigo || '').trim()" class="producto-suggest__cod">{{ (it.codigo || '').trim() }}</span>
+              <span class="producto-suggest__nom">{{ it.nombre }}</span>
+            </li>
+          </ul>
+        </div>
       </label>
       <label class="f">
         <span class="flab">Mes (opcional)</span>
@@ -946,9 +1061,67 @@ async function descargarExcel() {
   cursor: pointer;
 }
 
-.inp--producto {
+.f--producto {
   min-width: 14rem;
   max-width: 22rem;
+}
+
+.inp--producto {
+  width: 100%;
+  min-width: 14rem;
+  max-width: 22rem;
+}
+
+.producto-combo {
+  position: relative;
+  width: 100%;
+}
+
+.producto-suggest {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 3px);
+  margin: 0;
+  padding: 0.2rem 0;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 12px 28px rgb(15 23 42 / 14%);
+  max-height: 14rem;
+  overflow-y: auto;
+  z-index: 20;
+}
+
+.producto-suggest__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.45rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.78rem;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.producto-suggest__item:last-child {
+  border-bottom: none;
+}
+
+.producto-suggest__item:hover {
+  background: #e0f2fe;
+}
+
+.producto-suggest__cod {
+  font-weight: 700;
+  color: #0f172a;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+}
+
+.producto-suggest__nom {
+  color: #475569;
+  line-height: 1.25;
 }
 
 .inp--month {
