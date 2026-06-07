@@ -498,9 +498,22 @@ class MovimientoStockViewSet(EmpresaQuerysetMixin, viewsets.ReadOnlyModelViewSet
 
     def get_queryset(self):
         qs = super().get_queryset().order_by("-creado_en")
+        p = self.request.query_params
+        almacen = p.get("almacen")
+        if almacen not in (None, ""):
+            try:
+                qs = qs.filter(almacen_id=int(almacen))
+            except (TypeError, ValueError):
+                pass
+        producto = p.get("producto") or p.get("item")
+        if producto not in (None, ""):
+            try:
+                qs = qs.filter(lineas__item_id=int(producto)).distinct()
+            except (TypeError, ValueError):
+                pass
         user = self.request.user
         if user.is_authenticated and user.is_superuser:
-            empresa_q = self.request.query_params.get("empresa")
+            empresa_q = p.get("empresa")
             if empresa_q not in (None, ""):
                 try:
                     qs = qs.filter(empresa_id=int(empresa_q))

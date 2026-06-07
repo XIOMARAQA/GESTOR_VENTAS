@@ -64,7 +64,16 @@ type KardexPayload = {
 
 type AlmOpt = { id: number; nombre: string }
 type ItemOpt = { id: number; codigo?: string; nombre: string }
-type Paginated<T> = { results?: T[]; next?: string | null }
+type StockRow = {
+  id: number
+  item?: number
+  item_codigo?: string
+  item_nombre?: string
+  almacen?: number
+  almacen_nombre?: string
+  cantidad?: string | number
+}
+type Paginated<T> = { results?: T[]; next?: string | null; count?: number }
 
 const REF_TIPO_LABELS: Record<string, string> = {
   DOCUMENTO_VENTA: 'Documento de venta',
@@ -83,6 +92,7 @@ const ctx = useAppContextStore()
 const { empresaId, isSuperuser } = storeToRefs(ctx)
 
 const rows = ref<MovRow[]>([])
+const stockRows = ref<StockRow[]>([])
 const kardex = ref<KardexPayload | null>(null)
 const almacenes = ref<AlmOpt[]>([])
 const items = ref<ItemOpt[]>([])
@@ -104,6 +114,9 @@ const hasPrev = ref(false)
 
 const bloqueadoSinEmpresa = computed(() => isSuperuser.value && !empresaId.value)
 
+/** Resumen: saldos actuales por producto (alfabético), sin producto elegido. */
+const modoResumen = computed(() => filtroProductoId.value === '' && !bloqueadoSinEmpresa.value)
+
 /** Kardex: producto + almacén; tabla con fila de apertura y orden cronológico ascendente. */
 const kardexListo = computed(
   () =>
@@ -111,6 +124,29 @@ const kardexListo = computed(
     filtroAlmacenId.value !== '' &&
     !bloqueadoSinEmpresa.value,
 )
+
+/** Detalle: solo producto (varios almacenes); movimientos filtrados sin saldo acumulado. */
+const modoProductoDetalle = computed(
+  () =>
+    filtroProductoId.value !== '' &&
+    filtroAlmacenId.value === '' &&
+    !bloqueadoSinEmpresa.value,
+)
+
+const stockRowsOrdenados = computed(() =>
+  [...stockRows.value].sort((a, b) => {
+    const na = (a.item_nombre || '').localeCompare(b.item_nombre || '', 'es', { sensitivity: 'base' })
+    if (na !== 0) return na
+    const ca = (a.item_codigo || '').localeCompare(b.item_codigo || '', 'es', { sensitivity: 'base' })
+    if (ca !== 0) return ca
+    return (a.almacen_nombre || '').localeCompare(b.almacen_nombre || '', 'es', { sensitivity: 'base' })
+  }),
+)
+
+const productoSeleccionado = computed(() => {
+  if (filtroProductoId.value === '') return null
+  return items.value.find((i) => i.id === filtroProductoId.value) ?? null
+})
 
 /** Suma de entradas/salidas del kardex y saldo de la última fila (para pie de tabla). */
 const kardexTotales = computed(() => {
@@ -132,6 +168,18 @@ function appendKardexQueryParams(params: URLSearchParams) {
 function appendEmpresaParams(params: URLSearchParams) {
   if (isSuperuser.value && empresaId.value) {
     params.set('empresa', String(empresaId.value))
+  }
+}
+
+function appendMovQueryParams(params: URLSearchParams) {
+  appendEmpresaParams(params)
+  if (filtroAlmacenId.value !== '') params.set('almacen', String(filtroAlmacenId.value))
+  if (filtroProductoId.value !== '') params.set('item', String(filtroProductoId.value))
+}
+
+function autoSeleccionarAlmacenUnico() {
+  if (filtroProductoId.value !== '' && filtroAlmacenId.value === '' && almacenes.value.length === 1) {
+    filtroAlmacenId.value = almacenes.value[0]!.id
   }
 }
 
@@ -184,11 +232,12 @@ function kardexSumEntradasSalidas(results: KardexRow[]): { entradas: number; sal
 }
 
 /** Suma de cantidades en las líneas del movimiento (API ya envía `lineas`). */
-function sumLineasCantidad(r: MovRow): number {
+function sumLineasCantidad(r: MovRow, productoId?: number | ''): number {
   const lis = r.lineas
   if (!Array.isArray(lis) || !lis.length) return 0
   let s = 0
   for (const ln of lis) {
+    if (productoId !== undefined && productoId !== '' && ln.item !== productoId) continue
     const n = Number(ln.cantidad)
     if (Number.isFinite(n)) s += n
   }
@@ -197,12 +246,14 @@ function sumLineasCantidad(r: MovRow): number {
 
 /** Vista general: totales del comprobante según tipo (todos los ítems del movimiento). */
 function movEntradasTotales(r: MovRow): string {
-  if (r.tipo === 'INGRESO') return formatQty(sumLineasCantidad(r))
+  const pid = modoProductoDetalle.value ? filtroProductoId.value : ''
+  if (r.tipo === 'INGRESO') return formatQty(sumLineasCantidad(r, pid))
   return formatQty(0)
 }
 
 function movSalidasTotales(r: MovRow): string {
-  if (r.tipo === 'SALIDA') return formatQty(sumLineasCantidad(r))
+  const pid = modoProductoDetalle.value ? filtroProductoId.value : ''
+  if (r.tipo === 'SALIDA') return formatQty(sumLineasCantidad(r, pid))
   return formatQty(0)
 }
 
@@ -213,6 +264,7 @@ function textoOGuion(v: unknown): string {
 }
 
 function movNombreProducto(r: MovRow): string {
+  if (productoSeleccionado.value) return productoSeleccionado.value.nombre
   const api = (r.producto_nombre || '').trim()
   if (api) return api
   return '—'
@@ -304,6 +356,7 @@ function syncProductoFromBusqueda() {
   if (match) {
     filtroProductoId.value = match.id
     productoBusqueda.value = itemLabel(match)
+    autoSeleccionarAlmacenUnico()
     return
   }
   filtroProductoId.value = ''
@@ -328,6 +381,16 @@ function pickProducto(it: ItemOpt) {
   filtroProductoId.value = it.id
   productoBusqueda.value = itemLabel(it)
   productoSuggestOpen.value = false
+  autoSeleccionarAlmacenUnico()
+}
+
+function verDetalleDesdeResumen(row: StockRow) {
+  if (row.item) filtroProductoId.value = row.item
+  if (row.almacen) filtroAlmacenId.value = row.almacen
+  const it = items.value.find((i) => i.id === row.item)
+  if (it) productoBusqueda.value = itemLabel(it)
+  else if (row.item_nombre) productoBusqueda.value = row.item_nombre
+  autoSeleccionarAlmacenUnico()
 }
 
 async function loadAlmacenes() {
@@ -342,6 +405,29 @@ async function loadAlmacenes() {
   } catch {
     almacenes.value = []
   }
+}
+
+async function fetchAllPages<T>(basePath: string): Promise<T[]> {
+  const acc: T[] = []
+  let path: string | null = basePath
+  while (path) {
+    const res: AxiosResponse<T[] | Paginated<T>> = await api.get<T[] | Paginated<T>>(path)
+    const data = res.data
+    const chunk: T[] = Array.isArray(data) ? data : (data.results ?? [])
+    acc.push(...chunk)
+    const nextUrl: string | null =
+      !Array.isArray(data) && typeof data.next === 'string' && data.next ? data.next : null
+    path = nextUrl ? drfRelativePath(nextUrl) : null
+  }
+  return acc
+}
+
+async function loadStockResumen() {
+  const params = new URLSearchParams()
+  params.set('page_size', '500')
+  appendEmpresaParams(params)
+  if (filtroAlmacenId.value !== '') params.set('almacen', String(filtroAlmacenId.value))
+  stockRows.value = await fetchAllPages<StockRow>(`/inventario/stock/?${params}`)
 }
 
 async function loadItems() {
@@ -389,6 +475,7 @@ async function load() {
       const { data } = await api.get<KardexPayload>(`/inventario/movimientos/kardex/?${params}`)
       kardex.value = data
       rows.value = []
+      stockRows.value = []
       totalCount.value = data.count
       hasNext.value = false
       hasPrev.value = false
@@ -396,10 +483,21 @@ async function load() {
     }
 
     kardex.value = null
+
+    if (modoResumen.value) {
+      await loadStockResumen()
+      rows.value = []
+      totalCount.value = stockRows.value.length
+      hasNext.value = false
+      hasPrev.value = false
+      return
+    }
+
+    stockRows.value = []
     const params = new URLSearchParams()
     params.set('page', String(page.value))
     params.set('page_size', '50')
-    appendEmpresaParams(params)
+    appendMovQueryParams(params)
     const { data } = await api.get<MovRow[] | MovPaginated>(`/inventario/movimientos/?${params}`)
     rows.value = Array.isArray(data) ? data : (data.results ?? [])
     const paginated = !Array.isArray(data) ? data : null
@@ -410,6 +508,7 @@ async function load() {
   } catch (e) {
     err.value = listLoadErrorMessage(e, 'los movimientos de inventario')
     rows.value = []
+    stockRows.value = []
     kardex.value = null
     totalCount.value = 0
     hasNext.value = false
@@ -452,6 +551,10 @@ watch(empresaId, async () => {
 })
 
 watch(items, () => syncProductoBusquedaFromId())
+
+watch(almacenes, () => autoSeleccionarAlmacenUnico())
+
+watch(filtroProductoId, () => autoSeleccionarAlmacenUnico())
 
 watch([filtroAlmacenId, filtroProductoId, filtroMes], () => {
   page.value = 1
@@ -618,7 +721,7 @@ async function workbookBlobStyled(
 function buildMovParamsForExport(): URLSearchParams {
   const params = new URLSearchParams()
   params.set('page_size', '500')
-  appendEmpresaParams(params)
+  appendMovQueryParams(params)
   return params
 }
 
@@ -708,6 +811,28 @@ async function descargarExcel() {
       return
     }
 
+    if (modoResumen.value) {
+      const sorted = [...stockRows.value].sort((a, b) => {
+        const na = (a.item_nombre || '').localeCompare(b.item_nombre || '', 'es', { sensitivity: 'base' })
+        if (na !== 0) return na
+        return (a.item_codigo || '').localeCompare(b.item_codigo || '', 'es', { sensitivity: 'base' })
+      })
+      const headers = ['Almacén', 'Código', 'Nombre producto', 'Saldo']
+      const body: (string | number)[][] = sorted.map((r) => [
+        (r.almacen_nombre || '').trim() || '—',
+        (r.item_codigo || '').trim() || '—',
+        (r.item_nombre || '').trim() || '—',
+        formatQty(r.cantidad),
+      ])
+      const blob = await workbookBlobStyled('Saldos por producto', headers, body)
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `saldos_productos_${stamp}.xlsx`
+      a.click()
+      URL.revokeObjectURL(a.href)
+      return
+    }
+
     const dataRows = await fetchAllMovimientosForExport()
     const headers = [
       'Almacén',
@@ -759,10 +884,10 @@ async function descargarExcel() {
       <div class="head-text">
         <h1 class="title">Movimientos de inventario</h1>
         <p class="lead">
-          Vista general: <strong>Entradas</strong> y <strong>Salidas</strong> por comprobante. Para el
-          <strong>kardex</strong> elija <strong>almacén</strong> y <strong>producto</strong>: primera fila
-          <strong>saldo inicial</strong>, luego movimientos del más antiguo al más reciente y <strong>saldo</strong> en
-          cada línea. Opcional: filtro <strong>mes</strong> para corte mensual.
+          <strong>Resumen</strong>: saldos actuales por producto en orden alfabético. Busque un producto, elija una
+          coincidencia y verá solo sus <strong>movimientos</strong> con <strong>saldo acumulado</strong> (kardex).
+          Elija también <strong>almacén</strong> si tiene más de uno. Opcional: filtro <strong>mes</strong> para corte
+          mensual.
         </p>
       </div>
       <div class="head-actions">
@@ -878,10 +1003,15 @@ async function descargarExcel() {
       </div>
     </div>
 
-    <p v-if="!bloqueadoSinEmpresa && (filtroAlmacenId === '' || filtroProductoId === '')" class="hint">
-      Elija <strong>almacén</strong> y <strong>producto</strong> para el kardex: primera fila de <strong>saldo inicial</strong>,
-      luego movimientos por fecha ascendente con <strong>saldo</strong> acumulado. Use <strong>Mes</strong> para acotar al
-      corte mensual.
+    <p v-if="modoResumen" class="hint">
+      <strong>Resumen general</strong>: productos con <strong>saldo actual</strong> en orden alfabético.
+      <template v-if="filtroAlmacenId !== ''"> Filtrado por el almacén elegido.</template>
+      Haga clic en una fila o busque un producto arriba para ver el detalle de movimientos.
+    </p>
+    <p v-if="modoProductoDetalle" class="hint">
+      Mostrando movimientos de
+      <strong>{{ productoSeleccionado ? itemLabel(productoSeleccionado) : 'producto elegido' }}</strong>.
+      Elija <strong>almacén</strong> para ver el <strong>saldo acumulado</strong> (kardex) línea por línea.
     </p>
     <p v-if="kardex?.truncado" class="warn warn--mb">
       El historial supera el límite de visualización. Use el filtro por <strong>mes</strong> o exporte por partes.
@@ -941,7 +1071,8 @@ async function descargarExcel() {
     <div class="meta-row">
       <span class="count">
         <template v-if="kardexListo && kardex">{{ kardex.count }} fila(s) (incluye saldo inicial)</template>
-        <template v-else>{{ totalCount }} movimiento(s)</template>
+        <template v-else-if="modoResumen">{{ stockRowsOrdenados.length }} producto(s) con saldo</template>
+        <template v-else>{{ totalCount }} movimiento(s) del producto</template>
       </span>
     </div>
 
@@ -1000,6 +1131,38 @@ async function descargarExcel() {
             No hay movimientos en el período; solo se muestra el saldo inicial.
           </p>
         </template>
+        <template v-else-if="modoResumen">
+          <table class="t t--resumen">
+            <thead>
+              <tr>
+                <th>Almacén</th>
+                <th>Código</th>
+                <th>Nombre del producto</th>
+                <th>Saldo</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="r in stockRowsOrdenados"
+                :key="r.id"
+                class="tr-resumen"
+                tabindex="0"
+                role="button"
+                :title="`Ver movimientos de ${(r.item_nombre || '').trim() || 'producto'}`"
+                @click="verDetalleDesdeResumen(r)"
+                @keydown.enter.prevent="verDetalleDesdeResumen(r)"
+              >
+                <td>{{ (r.almacen_nombre || '').trim() || '—' }}</td>
+                <td class="td-mono">{{ (r.item_codigo || '').trim() || '—' }}</td>
+                <td class="td-product">{{ (r.item_nombre || '').trim() || '—' }}</td>
+                <td class="td-num td-num--bal">{{ formatQty(r.cantidad) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="!stockRowsOrdenados.length" class="empty">
+            No hay productos con saldo para los criterios elegidos.
+          </p>
+        </template>
         <template v-else>
           <table class="t">
             <thead>
@@ -1014,7 +1177,7 @@ async function descargarExcel() {
                 <th>Número</th>
                 <th>Entradas</th>
                 <th>Salidas</th>
-                <th class="th-saldo" title="Saldo acumulado solo al filtrar un producto y un almacén arriba">
+                <th class="th-saldo" title="Saldo acumulado al elegir también el almacén">
                   Saldo
                 </th>
               </tr>
@@ -1033,16 +1196,19 @@ async function descargarExcel() {
                 <td class="td-mono">{{ textoOGuion(r.comprobante_numero) }}</td>
                 <td class="td-num td-num--in">{{ movEntradasTotales(r) }}</td>
                 <td class="td-num td-num--out">{{ movSalidasTotales(r) }}</td>
-                <td class="td-num td-num--muted" title="Elija producto y almacén para ver el saldo acumulado por ítem">
+                <td class="td-num td-num--muted" title="Elija almacén para ver el saldo acumulado (kardex)">
                   —
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-if="!rows.length" class="empty">No hay movimientos para mostrar en esta página.</p>
+          <p v-if="!rows.length" class="empty">No hay movimientos del producto para mostrar en esta página.</p>
         </template>
       </div>
-      <div v-if="!loading && !kardexListo && rows.length && (hasNext || hasPrev)" class="pager">
+      <div
+        v-if="!loading && !kardexListo && !modoResumen && rows.length && (hasNext || hasPrev)"
+        class="pager"
+      >
         <button type="button" class="btn-page" :disabled="!hasPrev" @click="goPrev">Anterior</button>
         <span class="page-num">Página {{ page }}</span>
         <button type="button" class="btn-page" :disabled="!hasNext" @click="goNext">Siguiente</button>
@@ -1176,6 +1342,16 @@ async function descargarExcel() {
 .producto-suggest__nom {
   color: #475569;
   line-height: 1.25;
+}
+
+.tr-resumen {
+  cursor: pointer;
+}
+
+.tr-resumen:hover,
+.tr-resumen:focus-visible {
+  background: #f0f9ff;
+  outline: none;
 }
 
 .inp--month {
