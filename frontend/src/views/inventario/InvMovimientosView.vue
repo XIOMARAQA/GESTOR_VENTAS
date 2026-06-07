@@ -64,6 +64,7 @@ type KardexPayload = {
 
 type AlmOpt = { id: number; nombre: string }
 type ItemOpt = { id: number; codigo?: string; nombre: string }
+type Paginated<T> = { results?: T[]; next?: string | null }
 
 const REF_TIPO_LABELS: Record<string, string> = {
   DOCUMENTO_VENTA: 'Documento de venta',
@@ -353,11 +354,15 @@ async function loadItems() {
     appendEmpresaParams(params)
     let path: string | null = `/inventario/items/?${params}`
     while (path) {
-      const { data } = await api.get<{ results?: ItemOpt[]; next?: string | null } | ItemOpt[]>(path)
-      const chunk = Array.isArray(data) ? data : (data.results ?? [])
+      const res: AxiosResponse<ItemOpt[] | Paginated<ItemOpt>> = await api.get<
+        ItemOpt[] | Paginated<ItemOpt>
+      >(path)
+      const data = res.data
+      const chunk: ItemOpt[] = Array.isArray(data) ? data : (data.results ?? [])
       all.push(...chunk)
-      const next = Array.isArray(data) ? null : data.next
-      path = next ? drfRelativePath(next) : null
+      const nextUrl: string | null =
+        !Array.isArray(data) && typeof data.next === 'string' && data.next ? data.next : null
+      path = nextUrl ? drfRelativePath(nextUrl) : null
     }
     items.value = all
   } catch {
