@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import axios from 'axios'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { api } from '@/api/client'
@@ -33,6 +33,9 @@ const loading = ref(true)
 const err = ref('')
 const filtroNombre = ref('')
 const filtroCodigo = ref('')
+const pageSize = ref(20)
+const currentPage = ref(1)
+const PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
 const importInput = ref<HTMLInputElement | null>(null)
 const importing = ref(false)
@@ -64,6 +67,43 @@ const filtradas = computed(() => {
     return true
   })
 })
+
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(filtradas.value.length / pageSize.value)),
+)
+
+const paginadas = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filtradas.value.slice(start, start + pageSize.value)
+})
+
+const rangoDesde = computed(() => {
+  if (!filtradas.value.length) return 0
+  return (currentPage.value - 1) * pageSize.value + 1
+})
+
+const rangoHasta = computed(() =>
+  Math.min(currentPage.value * pageSize.value, filtradas.value.length),
+)
+
+const hasPrev = computed(() => currentPage.value > 1)
+const hasNext = computed(() => currentPage.value < totalPages.value)
+
+watch([filtroNombre, filtroCodigo, pageSize], () => {
+  currentPage.value = 1
+})
+
+watch(totalPages, (tp) => {
+  if (currentPage.value > tp) currentPage.value = tp
+})
+
+function goPrev() {
+  if (hasPrev.value) currentPage.value -= 1
+}
+
+function goNext() {
+  if (hasNext.value) currentPage.value += 1
+}
 
 const importBloqueado = computed(
   () => isSuperuser.value && !empresaId.value,
@@ -97,7 +137,7 @@ function itemsListPath() {
 }
 
 async function fetchRows() {
-  rows.value = await fetchAllPages<Row>(itemsListPath())
+  rows.value = await fetchAllPages<Row>(itemsListPath(), 5000)
 }
 
 async function load() {
@@ -396,7 +436,19 @@ onMounted(loadAll)
         <span class="flab">Código</span>
         <input v-model="filtroCodigo" type="text" class="inp" placeholder="Filtrar…" />
       </label>
-      <p class="total">Total visibles: {{ filtradas.length }} de {{ rows.length }}</p>
+      <label class="f">
+        <span class="flab">Filas por página</span>
+        <select v-model.number="pageSize" class="inp inp--select inp--page">
+          <option v-for="n in PAGE_SIZE_OPTIONS" :key="n" :value="n">{{ n }}</option>
+        </select>
+      </label>
+      <p class="total">
+        <template v-if="filtradas.length">
+          Mostrando {{ rangoDesde }}–{{ rangoHasta }} de {{ filtradas.length }}
+          <span v-if="filtradas.length !== rows.length"> ({{ rows.length }} en catálogo)</span>
+        </template>
+        <template v-else>Sin coincidencias ({{ rows.length }} en catálogo)</template>
+      </p>
     </div>
 
     <div class="card">
@@ -414,7 +466,7 @@ onMounted(loadAll)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="r in filtradas" :key="r.id">
+            <tr v-for="r in paginadas" :key="r.id">
               <td>
                 <code class="code">{{ r.codigo?.trim() || '—' }}</code>
               </td>
@@ -476,6 +528,11 @@ onMounted(loadAll)
           </tbody>
         </table>
         <p v-if="!filtradas.length" class="muted inner">Sin registros que coincidan.</p>
+      </div>
+      <div v-if="!loading && filtradas.length && (hasNext || hasPrev)" class="pager">
+        <button type="button" class="btn-page" :disabled="!hasPrev" @click="goPrev">Anterior</button>
+        <span class="page-num">Página {{ currentPage }} de {{ totalPages }}</span>
+        <button type="button" class="btn-page" :disabled="!hasNext" @click="goNext">Siguiente</button>
       </div>
     </div>
 
@@ -699,6 +756,9 @@ onMounted(loadAll)
   min-width: 100%;
   box-sizing: border-box;
 }
+.inp--page {
+  min-width: 5rem;
+}
 .total {
   margin: 0;
   font-size: 0.8rem;
@@ -838,6 +898,39 @@ onMounted(loadAll)
 }
 .inner {
   padding: 1rem;
+}
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #e2e8f0;
+  background: #fafafa;
+}
+.btn-page {
+  padding: 0.35rem 0.85rem;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  color: #334155;
+}
+.btn-page:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+.btn-page:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.page-num {
+  font-size: 0.8rem;
+  color: #64748b;
+  font-weight: 600;
 }
 .backdrop {
   position: fixed;
