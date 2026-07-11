@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -71,9 +72,25 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-_database_url = os.environ.get("DATABASE_URL")
+# Esquema PostgreSQL dedicado (comparte BD con helpmed u otras apps en otros esquemas).
+DB_SCHEMA = os.environ.get("DB_SCHEMA", "gestorVentas").strip() or "gestorVentas"
+
+_database_url = (os.environ.get("DATABASE_URL") or "").strip()
+_on_render = os.environ.get("RENDER", "").lower() in ("1", "true", "yes")
+if not _database_url and (_on_render or not DEBUG):
+    raise ImproperlyConfigured(
+        "DATABASE_URL es obligatorio en producción (Render). "
+        "En Render: Web Service → Environment → añada DATABASE_URL con la "
+        "Internal Database URL de su PostgreSQL (o vincule la base al servicio web)."
+    )
 if _database_url:
     DATABASES = {"default": dj_database_url.config(default=_database_url, conn_max_age=600)}
+    if DATABASES["default"].get("ENGINE") == "django.db.backends.postgresql":
+        DATABASES["default"].setdefault("OPTIONS", {})
+        # Identificador entre comillas: el esquema usa camelCase (gestorVentas).
+        DATABASES["default"]["OPTIONS"]["options"] = (
+            f'-c search_path="{DB_SCHEMA}",public'
+        )
 else:
     DATABASES = {
         "default": {

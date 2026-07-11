@@ -20,6 +20,12 @@ CREATE INDEX IF NOT EXISTS usuario_ruc_idx ON usuario (ruc);
 """
 
 
+def _create_usuario(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(SQL)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -27,5 +33,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(SQL, migrations.RunSQL.noop),
+        migrations.RunPython(_create_usuario, migrations.RunPython.noop),
     ]

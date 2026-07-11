@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS perfil_usuario (
 """
 
 
+def _create_perfil_usuario(apps, schema_editor):
+    if schema_editor.connection.vendor != "postgresql":
+        return
+    schema_editor.execute(SQL)
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -23,5 +29,5 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(SQL, migrations.RunSQL.noop),
+        migrations.RunPython(_create_perfil_usuario, migrations.RunPython.noop),
     ]

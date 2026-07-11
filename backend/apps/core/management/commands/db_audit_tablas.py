@@ -15,21 +15,28 @@ datos, no solo borrar.
 from __future__ import annotations
 
 from django.apps import apps
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
 
+def _db_schema() -> str:
+    return getattr(settings, "DB_SCHEMA", "public") or "public"
+
+
 def _tables_in_db() -> list[str]:
     vendor = connection.vendor
+    schema = _db_schema()
     with connection.cursor() as cursor:
         if vendor == "postgresql":
             cursor.execute(
                 """
                 SELECT tablename
                 FROM pg_tables
-                WHERE schemaname = 'public'
+                WHERE schemaname = %s
                 ORDER BY tablename
-                """
+                """,
+                [schema],
             )
             return [r[0] for r in cursor.fetchall()]
         if vendor == "sqlite":
@@ -48,9 +55,9 @@ def _estimated_rows_postgres(table: str) -> int | None:
             FROM pg_class c
             JOIN pg_namespace n ON n.oid = c.relnamespace
             LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid
-            WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname = %s
+            WHERE n.nspname = %s AND c.relkind = 'r' AND c.relname = %s
             """,
-            [table],
+            [_db_schema(), table],
         )
         row = cursor.fetchone()
         if not row:
