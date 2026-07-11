@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia'
 
 import { api } from '@/api/client'
 import { useAppContextStore } from '@/stores/appContext'
+import { fetchAllPages } from '@/utils/fetchAllPages'
 import { listLoadErrorMessage } from '@/utils/listLoadErrorMessage'
 
 type Row = {
@@ -87,9 +88,16 @@ async function loadMaestros() {
   }
 }
 
+function itemsListPath() {
+  const params = new URLSearchParams({ ordering: 'nombre' })
+  if (isSuperuser.value && empresaId.value) {
+    params.set('empresa', String(empresaId.value))
+  }
+  return `/inventario/items/?${params}`
+}
+
 async function fetchRows() {
-  const { data } = await api.get<{ results?: Row[] }>('/inventario/items/?page_size=500&ordering=nombre')
-  rows.value = Array.isArray(data) ? data : (data.results ?? [])
+  rows.value = await fetchAllPages<Row>(itemsListPath())
 }
 
 async function load() {
@@ -182,13 +190,13 @@ async function onImportFile(ev: Event) {
       errores: { fila: number; mensaje: string }[]
     }>('/inventario/items/importar-excel/', fd)
 
-    importMsg.value = `Listo: ${data.creados} creados, ${data.actualizados} actualizados.`
+    await load()
+    importMsg.value = `Listo: ${data.creados} creados, ${data.actualizados} actualizados. Catálogo: ${rows.value.length} ítem(s).`
     if (data.errores?.length) {
       importErr.value = data.errores
         .map((e) => `Fila ${e.fila}: ${e.mensaje}`)
         .join('\n')
     }
-    await load()
   } catch (e) {
     if (axios.isAxiosError(e) && e.response?.data) {
       const d = e.response.data
