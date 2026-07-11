@@ -55,19 +55,39 @@ def _django_setup() -> None:
     django.setup()
 
 
+def _db_schema() -> str:
+    _django_setup()
+    from django.conf import settings
+
+    return (getattr(settings, "DB_SCHEMA", "public") or "public").strip()
+
+
+def _ensure_db_schema() -> None:
+    schema = _db_schema()
+    if schema == "public":
+        return
+    _django_setup()
+    from django.db import connection
+
+    print(f"\n>> Asegurando esquema PostgreSQL: {schema}")
+    with connection.cursor() as cursor:
+        cursor.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+
+
 def _table_exists(table: str) -> bool:
     _django_setup()
     from django.db import connection
 
+    schema = _db_schema()
     with connection.cursor() as cursor:
         cursor.execute(
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.tables
-                WHERE table_schema = 'public' AND table_name = %s
+                WHERE table_schema = %s AND table_name = %s
             )
             """,
-            [table],
+            [schema, table],
         )
         return bool(cursor.fetchone()[0])
 
@@ -110,12 +130,14 @@ def _count_tables() -> int:
     _django_setup()
     from django.db import connection
 
+    schema = _db_schema()
     with connection.cursor() as cursor:
         cursor.execute(
             """
             SELECT COUNT(*) FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            """
+            WHERE table_schema = %s AND table_type = 'BASE TABLE'
+            """,
+            [schema],
         )
         return int(cursor.fetchone()[0])
 
@@ -130,12 +152,13 @@ def main() -> None:
     host_hint = db_url.split("@")[-1].split("/")[0] if "@" in db_url else "(oculto)"
     print(f"Destino: {host_hint}")
 
+    _ensure_db_schema()
     _run_manage("migrate", "core", "0001", "--noinput")
     if not args.skip_bootstrap:
         _run_bootstrap_sql()
     _run_manage("migrate", "--noinput")
 
-    print(f"\nListo. Tablas en public: {_count_tables()}")
+    print(f"\nListo. Tablas en {_db_schema()}: {_count_tables()}")
 
     if args.create_owner:
         _run_manage("ensure_platform_owner")
