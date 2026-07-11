@@ -69,6 +69,12 @@ class CotizacionViewSet(EmpresaScopedViewSetMixin, viewsets.ModelViewSet):
         est = (p.get("estado") or "").strip()
         if est:
             qs = qs.filter(estado=est)
+        serie = (p.get("serie") or "").strip()
+        if serie:
+            qs = qs.filter(serie__icontains=serie)
+        numero = (p.get("numero") or "").strip()
+        if numero:
+            qs = qs.filter(numero__icontains=numero)
         sn = (p.get("serie_numero") or "").strip()
         if sn:
             q = Q(serie__icontains=sn) | Q(numero__icontains=sn)

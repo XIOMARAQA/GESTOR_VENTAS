@@ -34,10 +34,48 @@ const hasta = new Date()
 const desde = new Date()
 desde.setDate(desde.getDate() - 90)
 
+/** Series desde GET /ventas/nubefact/config/ (COTIZACION_SERIE_INTERNA y NUBEFACT_SERIE_* en .env). */
+type SeriesVentasCfg = {
+  COTIZACION: string
+  FACTURA: string
+  BOLETA: string
+}
+
+const EMPTY_SERIES_VENTAS: SeriesVentasCfg = {
+  COTIZACION: '',
+  FACTURA: '',
+  BOLETA: '',
+}
+
+const seriesVentas = ref<SeriesVentasCfg>({ ...EMPTY_SERIES_VENTAS })
+
+function mergeSeriesDesdeApi(raw: Record<string, unknown> | undefined) {
+  if (!raw || typeof raw !== 'object') return
+  const keys = Object.keys(EMPTY_SERIES_VENTAS) as (keyof SeriesVentasCfg)[]
+  for (const k of keys) {
+    if (!Object.prototype.hasOwnProperty.call(raw, k)) continue
+    const v = raw[k]
+    if (typeof v === 'string') {
+      seriesVentas.value[k] = v.trim().slice(0, 10)
+    } else if (v != null) {
+      seriesVentas.value[k] = String(v).trim().slice(0, 10)
+    } else {
+      seriesVentas.value[k] = ''
+    }
+  }
+}
+
+const serieCotizacionHint = computed(() => {
+  const s = (seriesVentas.value.COTIZACION || 'COT1').trim()
+  return `${s}-0001`
+})
+
 const filters = reactive({
   cliente_documento: '',
   cliente_razon_social: '',
   estado: '',
+  serie: '',
+  numero: '',
   fecha_desde: isoDate(desde),
   fecha_hasta: isoDate(hasta),
 })
@@ -162,6 +200,8 @@ async function load() {
     if (filters.cliente_razon_social.trim())
       params.set('cliente_razon_social', filters.cliente_razon_social.trim())
     if (filters.estado.trim()) params.set('estado', filters.estado.trim())
+    if (filters.serie.trim()) params.set('serie', filters.serie.trim())
+    if (filters.numero.trim()) params.set('numero', filters.numero.trim())
     if (filters.fecha_desde) params.set('fecha_desde', filters.fecha_desde)
     if (filters.fecha_hasta) params.set('fecha_hasta', filters.fecha_hasta)
     params.set('page', String(page.value))
@@ -188,7 +228,22 @@ async function load() {
   }
 }
 
-onMounted(() => load())
+async function loadVentasConfig() {
+  try {
+    const { data } = await api.get<{ series?: Record<string, unknown> }>('/ventas/nubefact/config/')
+    mergeSeriesDesdeApi(data?.series)
+    if (!filters.serie.trim() && seriesVentas.value.COTIZACION) {
+      filters.serie = seriesVentas.value.COTIZACION
+    }
+  } catch {
+    /* filtros manuales si falla la config */
+  }
+}
+
+onMounted(async () => {
+  await loadVentasConfig()
+  await load()
+})
 
 function goNext() {
   if (hasNext.value) {
@@ -724,7 +779,8 @@ async function confirmarEmitirNubefactDesdeCotizacion() {
 function abrirConvertir(row: CotRow, tipo: 'BOLETA' | 'FACTURA') {
   convertRow.value = row
   convertTipo.value = tipo
-  convertSerie.value = ''
+  convertSerie.value =
+    tipo === 'FACTURA' ? seriesVentas.value.FACTURA : seriesVentas.value.BOLETA
   convertFecha.value = typeof row.fecha === 'string' ? row.fecha.slice(0, 10) : isoDate(new Date())
   convertError.value = ''
   showConvert.value = true
@@ -807,7 +863,7 @@ const precioColumnLabel = computed(() =>
         </button>
         <p class="hint">
           Documento interno (no Nubefact). Tras emitir obtiene correlativo tipo
-          <strong>COT1-0001</strong>. Luego convierta a boleta o factura; el borrador aparece en
+          <strong>{{ serieCotizacionHint }}</strong>. Luego convierta a boleta o factura; el borrador aparece en
           <RouterLink class="link-doc" to="/ventas/documentos">Comprobantes de venta</RouterLink>.
         </p>
       </div>
@@ -833,6 +889,20 @@ const precioColumnLabel = computed(() =>
             <option value="BORRADOR">Borrador</option>
             <option value="EMITIDO">Emitido</option>
           </select>
+        </label>
+        <label class="filter-field">
+          <span class="filter-label">Serie</span>
+          <input
+            v-model="filters.serie"
+            type="text"
+            class="filter-inp"
+            :placeholder="seriesVentas.COTIZACION || 'COT01'"
+            maxlength="10"
+          />
+        </label>
+        <label class="filter-field">
+          <span class="filter-label">Número</span>
+          <input v-model="filters.numero" type="text" class="filter-inp" maxlength="20" />
         </label>
         <label class="filter-field">
           <span class="filter-label">Desde</span>
@@ -1197,7 +1267,16 @@ const precioColumnLabel = computed(() =>
           </p>
           <label class="fld">
             <span>Serie SUNAT</span>
-            <input v-model="convertSerie" class="inp" maxlength="10" placeholder="Ej. F001 / B001" />
+            <input
+              v-model="convertSerie"
+              class="inp"
+              maxlength="10"
+              :placeholder="
+                convertTipo === 'FACTURA'
+                  ? seriesVentas.FACTURA || 'Ej. FT01'
+                  : seriesVentas.BOLETA || 'Ej. BV01'
+              "
+            />
           </label>
           <label class="fld">
             <span>Fecha emisión comprobante</span>

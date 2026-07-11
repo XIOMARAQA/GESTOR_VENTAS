@@ -55,6 +55,7 @@ class NubefactConfigView(APIView):
                 "prueba_url_configurada": bool(url.strip()),
                 "mensaje": "Configure NUBEFACT_PRUEBA_API_URL en .env para usar solo token + checkbox de prueba.",
                 "series": {
+                    "COTIZACION": getattr(settings, "COTIZACION_SERIE_INTERNA", "") or "",
                     "FACTURA": getattr(settings, "NUBEFACT_SERIE_FACTURA", "") or "",
                     "BOLETA": getattr(settings, "NUBEFACT_SERIE_BOLETA", "") or "",
                     "NOTA_CREDITO_FACTURA": getattr(
