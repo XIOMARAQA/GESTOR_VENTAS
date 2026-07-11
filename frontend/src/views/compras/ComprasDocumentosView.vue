@@ -1360,7 +1360,9 @@ async function guardarEIngresarStock() {
     return
   }
   if (formAlmacenId.value === '' || formAlmacenId.value == null) {
-    submitError.value = 'Seleccione el almacén de ingreso para registrar el stock.'
+    submitError.value = almacenesCatalog.value.length
+      ? 'Seleccione el almacén de ingreso para registrar el stock.'
+      : 'No hay almacenes registrados. Vaya a Inventario → Almacenes y ubicaciones, cree uno y vuelva a intentar.'
     return
   }
   submitting.value = true
@@ -1997,13 +1999,18 @@ const modalFacturaTitulo = computed(() =>
             <section class="block block--almacen">
               <label class="fld">
                 <span>Almacén (solo si registra stock ahora)</span>
-                <select v-model="formAlmacenId" class="inp">
+                <select v-model="formAlmacenId" class="inp" :disabled="!almacenesCatalog.length">
                   <option disabled value="">— Opcional para “Solo borrador” —</option>
                   <option v-for="a in almacenesCatalog" :key="a.id" :value="a.id">
                     {{ (a.nombre || '').trim() || `Almacén #${a.id}` }}
                   </option>
                 </select>
               </label>
+              <p v-if="!almacenesCatalog.length" class="almacen-hint">
+                No hay almacenes activos. Créelos en
+                <RouterLink to="/inventario/almacenes">Inventario → Almacenes y ubicaciones</RouterLink>
+                (asigne uno a su sucursal, p. ej. «Sucursal principal») y vuelva a abrir esta factura.
+              </p>
             </section>
 
             <p v-if="submitError" class="form-err">{{ submitError }}</p>
@@ -2038,13 +2045,18 @@ const modalFacturaTitulo = computed(() =>
           </p>
           <label class="fld">
             <span>Almacén</span>
-            <select v-model="emitAlmacenId" class="inp">
+            <select v-model="emitAlmacenId" class="inp" :disabled="!almacenesCatalog.length">
               <option disabled value="">— Seleccione —</option>
               <option v-for="a in almacenesCatalog" :key="a.id" :value="a.id">
                 {{ (a.nombre || '').trim() || `Almacén #${a.id}` }}
               </option>
             </select>
           </label>
+          <p v-if="!almacenesCatalog.length" class="almacen-hint">
+            No hay almacenes activos.
+            <RouterLink to="/inventario/almacenes">Registre un almacén</RouterLink>
+            en Inventario y vuelva a intentar.
+          </p>
           <p v-if="emitError" class="form-err">{{ emitError }}</p>
           <div class="modal-foot">
             <button type="button" class="btn-ghost" :disabled="emitSubmitting" @click="cerrarEmitModal">
@@ -2847,6 +2859,23 @@ const modalFacturaTitulo = computed(() =>
 .block--almacen {
   padding-top: 0.25rem;
   border-top: 1px dashed #e2e8f0;
+}
+
+.almacen-hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: #9a3412;
+  background: #ffedd5;
+  border: 1px solid #fdba74;
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+}
+
+.almacen-hint a {
+  color: #c2410c;
+  font-weight: 700;
+  text-decoration: underline;
 }
 
 .block-head {
